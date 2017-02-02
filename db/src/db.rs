@@ -12,6 +12,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::iter::once;
+use std::ops::Range;
 
 use itertools;
 use itertools::Itertools;
@@ -129,6 +130,7 @@ lazy_static! {
         r#"CREATE TABLE schema (ident TEXT NOT NULL, attr TEXT NOT NULL, value BLOB NOT NULL, value_type_tag SMALLINT NOT NULL,
              FOREIGN KEY (ident) REFERENCES idents (ident))"#,
         r#"CREATE INDEX idx_schema_unique ON schema (ident, attr, value, value_type_tag)"#,
+        // TODO: store entid instead of ident for partition name.
         r#"CREATE TABLE parts (part TEXT NOT NULL PRIMARY KEY, start INTEGER NOT NULL, idx INTEGER NOT NULL)"#,
         ]
     };
@@ -167,13 +169,15 @@ pub fn create_current_version(conn: &mut rusqlite::Connection) -> Result<DB> {
     // TODO: think more carefully about allocating new parts and bitmasking part ranges.
     // TODO: install these using bootstrap assertions.  It's tricky because the part ranges are implicit.
     // TODO: one insert, chunk into 999/3 sections, for safety.
+    // This is necessary: `transact` will only UPDATE parts, not INSERT them if they're missing.
     for (part, partition) in bootstrap_partition_map.iter() {
         // TODO: Convert "keyword" part to SQL using Value conversion.
         tx.execute("INSERT INTO parts VALUES (?, ?, ?)", &[part, &partition.start, &partition.index])?;
     }
 
-    let bootstrap_db = DB::new(bootstrap_partition_map, bootstrap::bootstrap_schema());
-    bootstrap_db.transact_internal(&tx, &bootstrap::bootstrap_entities()[..], bootstrap::TX0, now())?;
+    // TODO: return to transact_internal to self manage the encompassing SQLite transaction.
+    let mut bootstrap_db = DB::new(bootstrap_partition_map, bootstrap::bootstrap_schema());
+    bootstrap_db.transact(&tx, &bootstrap::bootstrap_entities()[..])?;
 
     set_user_version(&tx, CURRENT_VERSION)?;
 
@@ -752,6 +756,67 @@ impl DB {
         Ok(())
     }
 
+    /// Update the current partition map materialized view.
+    // TODO: only update changed partitions.
+    fn update_partition_map(&self, conn: &rusqlite::Connection) -> Result<()> {
+        let values_per_statement = 2;
+        let max_partitions = ::SQLITE_MAX_VARIABLE_NUMBER / values_per_statement;
+        if self.partition_map.len() > max_partitions {
+            bail!(ErrorKind::NotYetImplemented(format!("No more than {} partitions are supported", max_partitions)));
+        }
+
+        // Like "UPDATE parts SET idx = CASE WHEN part = ? THEN ? WHEN part = ? THEN ? ELSE idx END".
+        let s = format!("UPDATE parts SET idx = CASE {} ELSE idx END",
+                        repeat("WHEN part = ? THEN ?").take(self.partition_map.len()).join(" "));
+
+        println!("{}", s);
+
+        let params: Vec<&ToSql> = self.partition_map.iter().flat_map(|(name, partition)| {
+            once(name as &ToSql)
+                .chain(once(&partition.index as &ToSql))
+        }).collect();
+
+        // TODO: only cache the latest of these statements.  Changing the set of partitions isn't
+        // supported in the Clojure implementationat all, and might not be supported in Mentat soon,
+        // so this is very low priority.
+        let mut stmt = conn.prepare_cached(s.as_str())?;
+        stmt.execute(&params[..])
+            .map(|_c| ())
+            .chain_err(|| "Could not update partition map")
+    }
+
+    /// Allocate a single fresh entid in the given `partition`.
+    fn allocate_entid(&mut self, partition: String) -> i64 {
+        self.allocate_entids(partition, 1).start
+    }
+
+    /// Allocate `n` fresh entids in the given `partition`.
+    fn allocate_entids(&mut self, partition: String, n: i64) -> Range<i64> {
+        match self.partition_map.get_mut(&partition) {
+            Some(mut partition) => {
+                let idx = partition.index;
+                partition.index += n;
+                idx..partition.index
+            },
+            // This is a programming error.
+            None => panic!("Cannot allocate entid from unknown partition: {}", partition),
+        }
+    }
+
+    /// Transact the given `entities` against the given SQLite `conn`, using the metadata in
+    /// `self.DB`.
+    ///
+    /// This approach is explained in https://github.com/mozilla/mentat/wiki/Transacting.
+    // TODO: move this to the transactor layer.
+    pub fn transact(&mut self, conn: &rusqlite::Connection, entities: &[Entity]) -> Result<TxReport> {
+        let tx_instant = now(); // Label the transaction with the timestamp when we first see it: leading edge.
+        let tx = self.allocate_entid(":db.part/tx".to_string());
+
+        // Eventually, this will be responsible for managing a SQLite transaction.  For now, it's
+        // just about the tx details.
+        self.transact_internal(conn, entities, tx, tx_instant)
+    }
+
     /// Transact the given `entities` against the given SQLite `conn`, using the metadata in
     /// `self.DB`.
     ///
@@ -871,7 +936,8 @@ impl DB {
         self.insert_transaction(conn, tx)?;
         self.update_datoms(conn, tx)?;
 
-        // TODO: update parts, idents, schema materialized views.
+        // TODO: update idents and schema materialized views.
+        self.update_partition_map(conn)?;
 
         Ok(TxReport {
             tx: tx,
@@ -884,7 +950,6 @@ impl DB {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use {now};
     use bootstrap;
     use debug;
     use edn;
@@ -937,8 +1002,8 @@ mod tests {
             let expected_datoms: Option<&edn::Value> = transaction.get(&edn::Value::NamespacedKeyword(symbols::NamespacedKeyword::new("test", "expecteddatoms")));
 
             let entities: Vec<_> = mentat_tx_parser::Tx::parse(&[assertions][..]).unwrap();
-            let _report = db.transact_internal(&conn, &entities[..], bootstrap::TX0 + index + 1, now()).unwrap();
 
+            let _report = db.transact(&conn, &entities[..]).unwrap();
 
             if let Some(expected_transaction) = expected_transaction {
                 let transactions = debug::transactions_after(&conn, &db, bootstrap::TX0 + index).unwrap();
