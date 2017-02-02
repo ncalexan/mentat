@@ -108,3 +108,20 @@ pub type AVPair = (Entid, TypedValue);
 ///
 /// Used to resolve lookup-refs and upserts.
 pub type AVMap<'a> = HashMap<&'a AVPair, Entid>;
+
+/// A transaction report summarizes an applied transaction.
+#[derive(Clone,Debug,Default,Eq,Hash,Ord,PartialOrd,PartialEq)]
+pub struct TxReport {
+    /// The transaction ID of the transaction.
+    pub tx: Entid,
+
+    /// The timestamp when the transaction was commited.
+    ///
+    /// This is milliseconds after the Unix epoch according to the transactor's local clock.
+    // TODO: :db.type/instant.
+    pub tx_instant: i64,
+
+    /// A map from temporary ID to allocated entity IDs.
+    // TODO: represent temp IDs!
+    pub temp_ids: BTreeMap<(), Entid>,
+}
