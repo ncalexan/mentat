@@ -88,15 +88,42 @@ pub struct DB {
 
     /// The schema of the store.
     pub schema: Schema,
+
+    /// The next TempID identifier to be allocated.
+    next_temp_id_idx: i64,
 }
 
 impl DB {
     pub fn new(partition_map: PartitionMap, schema: Schema) -> DB {
         DB {
             partition_map: partition_map,
-            schema: schema
+            schema: schema,
+            next_temp_id_idx: -1_000_000,
         }
     }
+
+    pub fn allocate_temp_id<T>(&mut self, partition: T) -> TempId where T: Into<String> {
+        let idx = self.next_temp_id_idx;
+        self.next_temp_id_idx -= 1;
+        TempId {
+            partition: partition.into(),
+            idx: idx,
+        }
+    }
+}
+
+/// Represents a temporary ID on its way to being resolved.
+///
+/// A TempId is scoped to a single transaction.  The transaction parser produces `Entity` instances
+/// that may include `IdLiteral` instances; such id literals are indepedent of a `DB` instance.  As
+/// they are transacted, each id literal is resolved to a concrete `TempId` instance.
+#[derive(Clone,Debug,Eq,Hash,Ord,PartialOrd,PartialEq)]
+pub struct TempId {
+    /// The partition the entid this ID literal is resolved to will be allocated in.
+    partition: String,
+
+    /// A negative integer identifying this `TempId` uniquely in the scope of a single transaction.
+    idx: i64,
 }
 
 /// A pair [a v] in the store.
@@ -121,7 +148,6 @@ pub struct TxReport {
     // TODO: :db.type/instant.
     pub tx_instant: i64,
 
-    /// A map from temporary ID to allocated entity IDs.
-    // TODO: represent temp IDs!
-    pub temp_ids: BTreeMap<(), Entid>,
+    /// A map from temporary ID to allocated entid.
+    pub temp_ids: BTreeMap<TempId, Entid>,
 }

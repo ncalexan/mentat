@@ -822,7 +822,7 @@ impl DB {
     ///
     /// This approach is explained in https://github.com/mozilla/mentat/wiki/Transacting.
     // TODO: move this to the transactor layer.
-    pub fn transact_internal(&self, conn: &rusqlite::Connection, entities: &[Entity], tx: Entid, tx_instant: i64) -> Result<TxReport> {
+    pub fn transact_internal(&mut self, conn: &rusqlite::Connection, entities: &[Entity], tx: Entid, tx_instant: i64) -> Result<TxReport> {
         // TODO: push these into an internal transaction report?
 
         /// Assertions that are :db.cardinality/one and not :db.fulltext.
@@ -837,6 +837,9 @@ impl DB {
                           entids::DB_TX_INSTANT,
                           TypedValue::Long(tx_instant),
                           true));
+
+        let mut temp_ids = BTreeMap::default();
+        temp_ids.insert(self.allocate_temp_id(":db.part/tx"), tx);
 
         // Right now, this could be a for loop, saving some mapping, collecting, and type
         // annotations.  However, I expect it to be a multi-stage map as we start to transform the
@@ -942,7 +945,7 @@ impl DB {
         Ok(TxReport {
             tx: tx,
             tx_instant: tx_instant,
-            temp_ids: BTreeMap::default(),
+            temp_ids: temp_ids,
         })
     }
 }
@@ -1003,7 +1006,8 @@ mod tests {
 
             let entities: Vec<_> = mentat_tx_parser::Tx::parse(&[assertions][..]).unwrap();
 
-            let _report = db.transact(&conn, &entities[..]).unwrap();
+            let report = db.transact(&conn, &entities[..]).unwrap();
+            assert_eq!(report.tx, bootstrap::TX0 + index + 1);
 
             if let Some(expected_transaction) = expected_transaction {
                 let transactions = debug::transactions_after(&conn, &db, bootstrap::TX0 + index).unwrap();
