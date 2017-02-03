@@ -14,6 +14,8 @@ extern crate edn;
 extern crate combine;
 extern crate mentat_tx;
 
+use std::collections::{BTreeMap};
+
 use combine::{any, eof, many, parser, satisfy_map, token, Parser, ParseResult, Stream};
 use combine::combinator::{Expected, FnParser};
 use edn::symbols::NamespacedKeyword;
@@ -88,6 +90,31 @@ impl<I> Tx<I>
             } else {
                 None
             })
+            .parse_stream(input);
+    }
+
+    fn map() -> TxParser<Entity, I> {
+        fn_parser(Tx::<I>::map_, "{...}")
+    }
+
+    fn map_(input: I) -> ParseResult<Entity, I> {
+        return satisfy_map(|x: Value|
+                           if let Value::Map(y) = x {
+                               let map: Option<BTreeMap<Entid, Value>> = y.into_iter().map(|(k, v)| {
+                                   // TODO: fail to parse with a helpful error message about the key
+                                   // types if we see a non-Value::NamespacedKeyword key, rather
+                                   // than opaquely failing to parse the map entirely.
+                                   let k = match k {
+                                       Value::Integer(x) => Some(Entid::Entid(x)),
+                                       Value::NamespacedKeyword(x) => Some(Entid::Ident(x)),
+                                       _ => None
+                                   };
+                                   k.map(|k| (k, v))
+                               }).collect();
+                               map.map(|map| Entity::Map { map: map })
+                           } else {
+                               None
+                           })
             .parse_stream(input);
     }
 
@@ -202,13 +229,14 @@ impl<I> Tx<I>
 
     fn entity_(input: I) -> ParseResult<Entity, I> {
         let mut p = Tx::<I>::add()
-            .or(Tx::<I>::retract());
+            .or(Tx::<I>::retract())
+            .or(Tx::<I>::map());
         p.parse_stream(input)
     }
 
     fn entity() -> TxParser<Entity, I> {
         fn_parser(Tx::<I>::entity_,
-                  "[:db/add|:db/retract ...]")
+                  "[:db/add|:db/retract|{...} ...]")
     }
 
     fn entities_(input: I) -> ParseResult<Vec<Entity>, I> {
@@ -229,7 +257,7 @@ impl<I> Tx<I>
 
     fn entities() -> TxParser<Vec<Entity>, I> {
         fn_parser(Tx::<I>::entities_,
-                  "[[:db/add|:db/retract ...]*]")
+                  "[[:db/add|:db/retract|{...} ...]*]")
     }
 
     pub fn parse(input: I) -> Result<Vec<Entity>, combine::ParseError<I>> {

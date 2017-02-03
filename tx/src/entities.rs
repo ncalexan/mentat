@@ -12,7 +12,8 @@
 
 extern crate edn;
 
-use self::edn::types::Value;
+use std::collections::BTreeMap;
+use self::edn::Value;
 use self::edn::symbols::NamespacedKeyword;
 
 #[derive(Clone,Debug,Eq,Hash,Ord,PartialOrd,PartialEq)]
@@ -49,10 +50,16 @@ pub enum OpType {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Entity {
+    /// [{:db/add:db/retract} e a v].
     AddOrRetract {
         op: OpType,
         e: EntidOrLookupRefOrTempId,
         a: Entid,
         v: Value,
+    },
+
+    /// Map notation, like {:db/id "tempid" :key1 value1 :key2 value2 ... }.
+    Map {
+        map: BTreeMap<Entid, Value>,
     },
 }
