@@ -115,13 +115,23 @@ macro_rules! def_is {
     }
 }
 
-/// Creates `as_$TYPE` helper functions for Value, like `as_big_integer()`,
-/// which returns the underlying value representing this Value wrapped
-/// in an Option, like `<Option<&BigInt>`.
+/// Creates `as_$TYPE` helper functions for Value, like `as_big_integer()`, which returns a
+/// reference to the underlying value representing this Value wrapped in an Option, like
+/// `<Option<&BigInt>`.
 macro_rules! def_as {
     ($name: ident, $kind: path, $t: ty) => {
         pub fn $name(&self) -> Option<&$t> {
             match *self { $kind(ref v) => Some(v), _ => None }
+        }
+    }
+}
+
+/// Creates `into_$TYPE` helper functions for Value, like `into_big_integer()`, which returns the
+/// underlying value representing this Value wrapped in an Option, like `<Option<BigInt>`.
+macro_rules! def_into {
+    ($name: ident, $kind: path, $t: ty) => {
+        pub fn $name(self) -> Option<$t> {
+            match self { $kind(v) => Some(v), _ => None }
         }
     }
 }
@@ -161,6 +171,26 @@ impl Value {
     def_as!(as_list, List, LinkedList<Value>);
     def_as!(as_set, Set, BTreeSet<Value>);
     def_as!(as_map, Map, BTreeMap<Value, Value>);
+
+    def_into!(into_boolean, Boolean, bool);
+    def_into!(into_integer, Integer, i64);
+    def_into!(into_big_integer, BigInteger, BigInt);
+    def_into!(into_ordered_float, Float, OrderedFloat<f64>);
+
+    // Custom into_float.
+    pub fn into_float(self) -> Option<f64> {
+        match self { Float(OrderedFloat(f)) => Some(f), _ => None }
+    }
+
+    def_into!(into_text, Text, String);
+    def_into!(into_symbol, PlainSymbol, symbols::PlainSymbol);
+    def_into!(into_namespaced_symbol, NamespacedSymbol, symbols::NamespacedSymbol);
+    def_into!(into_keyword, Keyword, symbols::Keyword);
+    def_into!(into_namespaced_keyword, NamespacedKeyword, symbols::NamespacedKeyword);
+    def_into!(into_vector, Vector, Vec<Value>);
+    def_into!(into_list, List, LinkedList<Value>);
+    def_into!(into_set, Set, BTreeSet<Value>);
+    def_into!(into_map, Map, BTreeMap<Value, Value>);
 
     pub fn from_bigint(src: &str) -> Option<Value> {
         src.parse::<BigInt>().map(Value::BigInteger).ok()
