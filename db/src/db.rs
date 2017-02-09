@@ -454,7 +454,7 @@ enum Term<E, V> {
 }
 
 type EntidOr<T> = std::result::Result<Entid, T>;
-type ValueOr<T> = std::result::Result<Value, T>;
+type TypedValueOr<T> = std::result::Result<TypedValue, T>;
 
 use std::rc::Rc;
 
@@ -472,8 +472,8 @@ enum LookupRefOrTempId {
     TempId(TempId)
 }
 
-type TermWithTempIds = Term<EntidOr<TempId>, ValueOr<TempId>>;
-type TermWithoutTempIds = Term<Entid, Value>;
+type TermWithTempIds = Term<EntidOr<TempId>, TypedValueOr<TempId>>;
+type TermWithoutTempIds = Term<Entid, TypedValue>;
 type Population = Vec<TermWithTempIds>;
 
 /// "Simple upserts" that look like [:db/add TEMPID a v], where a is :db.unique/identity.
@@ -602,8 +602,8 @@ impl Generation {
             match term {
                 Term::AddOrRetract(op, std::result::Result::Err(t1), a, std::result::Result::Err(t2)) => {
                     match (temp_id_map.get(&*t1), temp_id_map.get(&*t2)) {
-                        (Some(&n1), Some(&n2)) => next.resolved.push(Term::AddOrRetract(op, std::result::Result::Ok(n1), a, std::result::Result::Ok(Value::Integer(n2)))),
-                        (None, Some(&n2)) => next.upserts_e.push(Term::AddOrRetract(op, std::result::Result::Err(t1), a, std::result::Result::Ok(Value::Integer(n2)))),
+                        (Some(&n1), Some(&n2)) => next.resolved.push(Term::AddOrRetract(op, std::result::Result::Ok(n1), a, std::result::Result::Ok(TypedValue::Ref(n2)))),
+                        (None, Some(&n2)) => next.upserts_e.push(Term::AddOrRetract(op, std::result::Result::Err(t1), a, std::result::Result::Ok(TypedValue::Ref(n2)))),
                         (Some(&n1), None) => next.allocations_v.push(Term::AddOrRetract(op, std::result::Result::Ok(n1), a, std::result::Result::Err(t2))),
                         (None, None) => next.allocations_ev.push(Term::AddOrRetract(op, std::result::Result::Err(t1), a, std::result::Result::Err(t2))),
                     }
@@ -617,8 +617,8 @@ impl Generation {
             match term {
                 Term::AddOrRetract(op, std::result::Result::Err(t1), a, std::result::Result::Err(t2)) => {
                     match (temp_id_map.get(&*t1), temp_id_map.get(&*t2)) {
-                        (Some(&n1), Some(&n2)) => next.resolved.push(Term::AddOrRetract(op, std::result::Result::Ok(n1), a, std::result::Result::Ok(Value::Integer(n2)))),
-                        (None, Some(&n2)) => next.allocations_e.push(Term::AddOrRetract(op, std::result::Result::Err(t1), a, std::result::Result::Ok(Value::Integer(n2)))),
+                        (Some(&n1), Some(&n2)) => next.resolved.push(Term::AddOrRetract(op, std::result::Result::Ok(n1), a, std::result::Result::Ok(TypedValue::Ref(n2)))),
+                        (None, Some(&n2)) => next.allocations_e.push(Term::AddOrRetract(op, std::result::Result::Err(t1), a, std::result::Result::Ok(TypedValue::Ref(n2)))),
                         (Some(&n1), None) => next.allocations_v.push(Term::AddOrRetract(op, std::result::Result::Ok(n1), a, std::result::Result::Err(t2))),
                         (None, None) => next.allocations_ev.push(Term::AddOrRetract(op, std::result::Result::Err(t1), a, std::result::Result::Err(t2))),
                     }
@@ -644,7 +644,7 @@ impl Generation {
             match term {
                 Term::AddOrRetract(op, e, a, std::result::Result::Err(t)) => {
                     match temp_id_map.get(&*t) {
-                        Some(&n) => next.resolved.push(Term::AddOrRetract(op, e, a, std::result::Result::Ok(Value::Integer(n)))),
+                        Some(&n) => next.resolved.push(Term::AddOrRetract(op, e, a, std::result::Result::Ok(TypedValue::Ref(n)))),
                         None => next.allocations_v.push(Term::AddOrRetract(op, e, a, std::result::Result::Err(t))),
                     }
                 },
@@ -703,7 +703,7 @@ impl Generation {
                     Term::AddOrRetract(op, std::result::Result::Err(t1), a, std::result::Result::Err(t2)) => {
                         // TODO: consider require on temp_id_map.
                         match (temp_id_map.get(&*t1), temp_id_map.get(&*t2)) {
-                            (Some(&n1), Some(&n2)) => Term::AddOrRetract(op, n1, a, Value::Integer(n2)),
+                            (Some(&n1), Some(&n2)) => Term::AddOrRetract(op, n1, a, TypedValue::Ref(n2)),
                             _ => panic!("At the disco"),
                         }
                     },
@@ -715,7 +715,7 @@ impl Generation {
                     },
                     Term::AddOrRetract(op, std::result::Result::Ok(e), a, std::result::Result::Err(t)) => {
                         match temp_id_map.get(&*t) {
-                            Some(&n) => Term::AddOrRetract(op, e, a, Value::Integer(n)),
+                            Some(&n) => Term::AddOrRetract(op, e, a, TypedValue::Ref(n)),
                             _ => panic!("At the disco"),
                         }
                     },
@@ -1175,8 +1175,8 @@ impl DB {
         // Right now, this could be a for loop, saving some mapping, collecting, and type
         // annotations.  However, I expect it to be a multi-stage map as we start to transform the
         // underlying entities, in which case this expression is more natural than for loops.
-        let terms: Vec<Result<Term<EntidOr<LookupRefOrTempId>, ValueOr<LookupRefOrTempId>>>> = entities.into_iter()
-            .map(|entity: Entity| -> Result<Term<EntidOr<LookupRefOrTempId>, ValueOr<LookupRefOrTempId>>> {
+        let terms: Vec<Result<Term<EntidOr<LookupRefOrTempId>, TypedValueOr<LookupRefOrTempId>>>> = entities.into_iter()
+            .map(|entity: Entity| -> Result<Term<EntidOr<LookupRefOrTempId>, TypedValueOr<LookupRefOrTempId>>> {
             match entity {
                 // Entity::Map {
                 //     map: map,
@@ -1244,10 +1244,16 @@ impl DB {
                             // self.to_typed_value(elements[0].unwrap(),
 
                             // let av = AVPair(elements.
-                            // ValueOr::Other(EntidOrLookupRefOrTempId::LookupRef(lookup_refs.insert()))
+                            // TypedValueOr::Other(EntidOrLookupRefOrTempId::LookupRef(lookup_refs.insert()))
                             // // if attribute.value_type == ValueType::Ref && v_.is_text() {
                         } else {
-                            std::result::Result::Ok(v_)
+
+                            // Here is where we do schema-aware typechecking: either assert that the
+                            // given value is in the attribute's value set, or (in limited cases) to
+                            // coerce the value into the attribute's value set.
+                            let typed_value: TypedValue = self.to_typed_value(&v_, &attribute)?;
+
+                            std::result::Result::Ok(typed_value)
                         }
                     };
 
@@ -1257,11 +1263,6 @@ impl DB {
                     // if attribute.fulltext {
                     //     bail!(ErrorKind::NotYetImplemented(format!("Transacting :db/fulltext entities is not yet implemented: {:?}", entity)))
                     // }
-
-                    // // This is our chance to do schema-aware typechecking: to either assert that the
-                    // // given value is in the attribute's value set, or (in limited cases) to coerce
-                    // // the value into the attribute's value set.
-                    // let typed_value: TypedValue = self.to_typed_value(v_, &attribute)?;
 
                     // let added = true;
                     // if attribute.multival {
@@ -1314,7 +1315,7 @@ impl DB {
     //             term.and_then(|term| {
     //                 // () // Ok(())
     //                 match term {
-    // // AddOrRetract(OpType, T, Entid, ValueOr<T>),
+    // // AddOrRetract(OpType, T, Entid, TypedValueOr<T>),
     // // RetractAttribute(T, Entid),
     // // RetractEntity(T)
     //                     Term::AddOrRetract(op, e, a, v) => {
@@ -1328,11 +1329,11 @@ impl DB {
     //                         };
 
     //                         let v_ = match v {
-    //                             ValueOr::Other(LookupRefOrTempId::LookupRef(_)) => {
+    //                             TypedValueOr::Other(LookupRefOrTempId::LookupRef(_)) => {
     //                                 bail!(ErrorKind::NotYetImplemented(format!("Transacting lookup-refs is not yet implemented: {:?}", term)))
     //                             },
-    //                             ValueOr::Other(LookupRefOrTempId::TempId(e_)) => ValueOr::Other(e_),
-    //                             ValueOr::ValueLeft(e_) => ValueOr::ValueLeft(e_),
+    //                             TypedValueOr::Other(LookupRefOrTempId::TempId(e_)) => TypedValueOr::Other(e_),
+    //                             TypedValueOr::ValueLeft(e_) => TypedValueOr::ValueLeft(e_),
     //                         };
 
     //                         Ok(Term::AddOrRetract(op, e_, a, v_))
@@ -1345,7 +1346,7 @@ impl DB {
     //         })
             .collect();
 
-        let terms: Result<Vec<Term<EntidOr<LookupRefOrTempId>, ValueOr<LookupRefOrTempId>>>> = terms.into_iter().collect();
+        let terms: Result<Vec<Term<EntidOr<LookupRefOrTempId>, TypedValueOr<LookupRefOrTempId>>>> = terms.into_iter().collect();
         let terms = terms?;
 
         let avs: Vec<&(i64, TypedValue)> = lookup_refs.inner.iter().map(|rc| &**rc).collect();
@@ -1366,12 +1367,12 @@ impl DB {
             }
         };
 
-        let terms: Result<Vec<Term<EntidOr<TempId>, ValueOr<TempId>>>> = terms.into_iter().map(|term: Term<EntidOr<LookupRefOrTempId>, ValueOr<LookupRefOrTempId>>| -> Result<Term<EntidOr<TempId>, ValueOr<TempId>>> {
+        let terms: Result<Vec<Term<EntidOr<TempId>, TypedValueOr<TempId>>>> = terms.into_iter().map(|term: Term<EntidOr<LookupRefOrTempId>, TypedValueOr<LookupRefOrTempId>>| -> Result<Term<EntidOr<TempId>, TypedValueOr<TempId>>> {
             match term {
                 Term::AddOrRetract(op, e, a, v) => {
                     // let x: EntidOr<LookupRefOrTempId> = e;
                     // let y: EntidOr<TempId> = replace_lookup_ref(&lookup_map, e)?;
-                    Ok(Term::AddOrRetract(op, replace_lookup_ref(&lookup_map, e, |x| x)?, a, replace_lookup_ref(&lookup_map, v, |x| Value::Integer(x))?))
+                    Ok(Term::AddOrRetract(op, replace_lookup_ref(&lookup_map, e, |x| x)?, a, replace_lookup_ref(&lookup_map, v, |x| TypedValue::Ref(x))?))
                 },
                 _ => bail!(ErrorKind::NotYetImplemented(format!("Transacting this entity is not yet implemented: {:?}", 1))) // XXX
             }
@@ -1391,11 +1392,9 @@ impl DB {
                 match term {
                     &Term::AddOrRetract(_, std::result::Result::Err(ref t), ref a, std::result::Result::Ok(ref v)) => {
 
-                        // TODO: figure out how to make this less expensive.  Just do it earlier, and have TypedValueOr instead of ValueOr?
-                        let attribute: &Attribute = self.schema.require_attribute_for_entid(a)?;
-                        let typed_value: TypedValue = self.to_typed_value(v, &attribute)?;
-
-                        temp_id_avs.push((t.clone(), (*a, typed_value)));
+                        // TODO: figure out how to make this less expensive, i.e., don't require
+                        // clone() of an arbitrary value.
+                        temp_id_avs.push((t.clone(), (*a, v.clone())));
                     },
                     _ => panic!("At the disco"),
                 }
@@ -1442,28 +1441,23 @@ impl DB {
 
         let temp_id_allocations: TempIdMap = unresolved_temp_ids.into_iter().zip(entids).collect();
 
-        let final_terms: Vec<Term<Entid, Value>> = generation.into_allocated_iter(temp_id_allocations).collect();
+        let final_terms: Vec<Term<Entid, TypedValue>> = generation.into_allocated_iter(temp_id_allocations).collect();
 
         // Collect into non_fts_*.
         // TODO: use something like Clojure's group_by to do this.
-        for term in &final_terms {
+        for term in final_terms {
             match term {
-                &Term::AddOrRetract(ref op, ref e, ref a, ref v) => {
-                    let attribute: &Attribute = self.schema.require_attribute_for_entid(a)?;
+                Term::AddOrRetract(op, e, a, v) => {
+                    let attribute: &Attribute = self.schema.require_attribute_for_entid(&a)?;
                     if attribute.fulltext {
-                        bail!(ErrorKind::NotYetImplemented(format!("Transacting :db/fulltext entities is not yet implemented: {:?}", term)))
+                        bail!(ErrorKind::NotYetImplemented(format!("Transacting :db/fulltext entities is not yet implemented"))) // TODO: reference original input.  Difficult!
                     }
 
-                    // This is our chance to do schema-aware typechecking: to either assert that the
-                    // given value is in the attribute's value set, or (in limited cases) to coerce
-                    // the value into the attribute's value set.
-                    let typed_value: TypedValue = self.to_typed_value(v, &attribute)?;
-
-                    let added = *op == OpType::Add;
+                    let added = op == OpType::Add;
                     if attribute.multival {
-                        non_fts_many.push((*e, *a, typed_value, added));
+                        non_fts_many.push((e, a, v, added));
                     } else {
-                        non_fts_one.push((*e, *a, typed_value, added));
+                        non_fts_one.push((e, a, v, added));
                     }
                 },
                 _ => bail!(ErrorKind::NotYetImplemented(format!("Transacting this term is not yet implemented: {:?}", term))) // TODO: reference original input.  Difficult!
