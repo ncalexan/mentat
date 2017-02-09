@@ -14,7 +14,7 @@
 //! https://github.com/mozilla/mentat/wiki/Transacting:-upsert-resolution-algorithm.
 
 use std;
-use std::iter::{empty, once};
+// use std::iter::{once};
 
 // use mentat_core::Attribute;
 use mentat_tx::entities::OpType;
@@ -119,6 +119,18 @@ impl Generation {
         }
 
         next
+    }
+
+    /// Collect id->[a v] pairs.
+    ///
+    /// Note: the return type is Box<> since `impl Trait` is not yet stable.
+    fn av_pairs<'a>(&'a self) -> Box<Iterator<Item=(TempId, AVPair)> + 'a> {
+        let i = self.upserts_e.iter().map(|&UpsertE(ref t, _, ref a, ref v)| { // in &self.upserts_e {
+            // TODO: figure out how to make this less expensive, i.e., don't require clone() of an
+            // arbitrary TypedValue.
+            (t.clone(), (*a, v.clone()))
+        });
+        Box::new(i)
     }
 
     // /// Iterate any temporary IDs present in entities still requiring allocation.
