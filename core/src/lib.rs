@@ -120,3 +120,4 @@ impl Default for Attribute {
     }
 }
 
+pub mod intern_set;
