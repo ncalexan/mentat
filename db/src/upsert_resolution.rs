@@ -40,51 +40,36 @@ enum PopulationType {
     Inert,
 }
 
-// /// A "Simple upsert" that looks like [:db/add TEMPID a v], where a is :db.unique/identity.
-// #[derive(Clone,Debug,Eq,Hash,Ord,PartialOrd,PartialEq)]
-// struct UpsertE(TempId, Attribute, Entid, TypedValue);
+/// A "Simple upsert" that looks like [:db/add TEMPID a v], where a is :db.unique/identity.
+#[derive(Clone,Debug,Eq,Hash,Ord,PartialOrd,PartialEq)]
+struct UpsertE(TempId, Entid, TypedValue);
 
-// /// A "Complex upsert" that looks like [:db/add TEMPID a OTHERID], where a is :db.unique/identity
-// #[derive(Clone,Debug,Eq,Hash,Ord,PartialOrd,PartialEq)]
-// struct UpsertEV(TempId, Attribute, Entid, TempId);
+/// A "Complex upsert" that looks like [:db/add TEMPID a OTHERID], where a is :db.unique/identity
+#[derive(Clone,Debug,Eq,Hash,Ord,PartialOrd,PartialEq)]
+struct UpsertEV(TempId, Entid, TempId);
 
-// #[derive(Clone,Debug,Default,Eq,Hash,Ord,PartialOrd,PartialEq)]
-// struct Genertaion {
-//     /// "Simple upserts" that look like [:db/add TEMPID a v], where a is :db.unique/identity.
-//     upserts_e: Vec<UpsertE>,
+#[derive(Clone,Debug,Default,Eq,Hash,Ord,PartialOrd,PartialEq)]
+pub struct Generation {
+    /// "Simple upserts" that look like [:db/add TEMPID a v], where a is :db.unique/identity.
+    upserts_e: Vec<UpsertE>,
 
-//     /// "Complex upserts" that look like [:db/add TEMPID a OTHERID], where a is :db.unique/identity
-//     upserts_ev: Vec<UpsertEV>,
+    /// "Complex upserts" that look like [:db/add TEMPID a OTHERID], where a is :db.unique/identity
+    upserts_ev: Vec<UpsertEV>,
 
-//     /// Entities that look like:
-//     /// - [:db/add TEMPID b OTHERID], where b is not :db.unique/identity;
-//     /// - [:db/add TEMPID b v], where b is not :db.unique/identity.
-//     /// - [:db/add e b OTHERID].
-//     allocations: Vec<TermWithTempIds>,
+    /// Entities that look like:
+    /// - [:db/add TEMPID b OTHERID], where b is not :db.unique/identity;
+    /// - [:db/add TEMPID b v], where b is not :db.unique/identity.
+    /// - [:db/add e b OTHERID].
+    allocations: Vec<TermWithTempIds>,
 
-//     /// Entities that upserted and no longer reference temp IDs.  These assertions are guaranteed to
-//     /// be in the store.
-//     upserted: Vec<TermWithoutTempIds>,
+    /// Entities that upserted and no longer reference temp IDs.  These assertions are guaranteed to
+    /// be in the store.
+    upserted: Vec<TermWithoutTempIds>,
 
-//     /// Entities that resolved due to other upserts and no longer reference temp IDs.  These
-//     /// assertions may or may not be in the store.
-//     resolved: Vec<TermWithoutTempIds>,
-
-//     // /// Entities that look like [:db/add TEMPID b OTHERID], where b is not :db.unique/identity.
-//     // allocations_ev: Population,
-
-//     // /// Entities that look like [:db/add TEMPID b OTHERID], where b is not :db.unique/identity.
-//     // allocations_e: Population,
-
-//     // /// Entities that look like [:db/add e b OTHERID], where b is not :db.unique/identity
-//     // allocations_v: Population,
-
-//     // /// Upserts that upserted.
-//     // upserted: Population,
-
-//     // /// Allocations that resolved due to other upserts.
-//     // resolved: Population,
-// }
+    /// Entities that resolved due to other upserts and no longer reference temp IDs.  These
+    /// assertions may or may not be in the store.
+    resolved: Vec<TermWithoutTempIds>,
+}
 
 // impl Generation {
 //     /// Return true if it's possible to evolve this generation further.
@@ -202,25 +187,6 @@ enum PopulationType {
 //     //     // RetractEntity(E)
 //     // }
 
-
-#[derive(Clone,Debug,Default,Eq,Hash,Ord,PartialOrd,PartialEq)]
-pub struct Generation {
-    /// "Simple upserts" that look like [:db/add TEMPID a v], where a is :db.unique/identity.
-    upserts_e: Population,
-
-    /// "Complex upserts" that look like [:db/add TEMPID a OTHERID], where a is :db.unique/identity
-    upserts_ev: Population,
-
-    /// XXX todo.
-    allocations: Population,
-
-    /// Upserts that upserted.
-    upserted: Population,
-
-    /// Allocations that resolved due to other upserts.
-    resolved: Population,
-}
-
 #[derive(Clone,Debug,Default,Eq,Hash,Ord,PartialOrd,PartialEq)]
 pub struct FinalPopulations {
     /// Upserts that upserted.
@@ -257,12 +223,33 @@ impl Generation {
         let mut generation = Generation::default();
         let mut inert = vec![];
 
+        let is_unique = |a: &Entid| -> errors::Result<bool> {
+            let attribute: &Attribute = db.schema.require_attribute_for_entid(a)?;
+            Ok(attribute.unique_identity)
+        };
+
         for term in terms.into_iter() {
-            match term.population_type(db)? {
-                PopulationType::UpsertsEV => generation.upserts_ev.push(term),
-                PopulationType::UpsertsE => generation.upserts_e.push(term),
-                PopulationType::Allocations => generation.allocations.push(term),
-                PopulationType::Inert => inert.push(term),
+            match term {
+                Term::AddOrRetract(op, Err(e), a, Err(v)) => {
+                    if op == OpType::Add && is_unique(&a)? {
+                        generation.upserts_ev.push(UpsertEV(e, a, v));
+                    } else {
+                        generation.allocations.push(Term::AddOrRetract(op, Err(e), a, Err(v)));
+                    }
+                },
+                Term::AddOrRetract(op, Err(e), a, Ok(v)) => {
+                    if op == OpType::Add && is_unique(&a)? {
+                        generation.upserts_e.push(UpsertE(e, a, v));
+                    } else {
+                        generation.allocations.push(Term::AddOrRetract(op, Err(e), a, Ok(v)));
+                    }
+                },
+                Term::AddOrRetract(op, Ok(e), a, Err(v)) => {
+                    generation.allocations.push(Term::AddOrRetract(op, Ok(e), a, Err(v)));
+                },
+                Term::AddOrRetract(op, Ok(e), a, Ok(v)) => {
+                    inert.push(Term::AddOrRetract(op, Ok(e), a, Ok(v)));
+                },
             }
         }
 
@@ -276,29 +263,19 @@ impl Generation {
     pub fn evolve_one_step(self, temp_id_map: &TempIdMap) -> Generation {
         let mut next = Generation::default();
 
-        for term in self.upserts_e {
-            match term {
-                Term::AddOrRetract(op, Err(t), a, v) => {
-                    match temp_id_map.get(&*t) {
-                        Some(&n) => next.upserted.push(Term::AddOrRetract(op, Ok(n), a, v)),
-                        None => next.allocations.push(Term::AddOrRetract(op, Err(t), a, v)),
-                    }
-                },
-                _ => panic!("At the disco"),
+        for UpsertE(t, a, v) in self.upserts_e {
+            match temp_id_map.get(&*t) {
+                Some(&n) => next.upserted.push(Term::AddOrRetract(OpType::Add, n, a, v)),
+                None => next.allocations.push(Term::AddOrRetract(OpType::Add, Err(t), a, Ok(v))),
             }
         }
 
-        for term in self.upserts_ev {
-            match term {
-                Term::AddOrRetract(op, Err(t1), a, Err(t2)) => {
-                    match (temp_id_map.get(&*t1), temp_id_map.get(&*t2)) {
-                        (Some(&n1), Some(&n2)) => next.resolved.push(Term::AddOrRetract(op, Ok(n1), a, Ok(TypedValue::Ref(n2)))),
-                        (None, Some(&n2)) => next.upserts_e.push(Term::AddOrRetract(op, Err(t1), a, Ok(TypedValue::Ref(n2)))),
-                        (Some(&n1), None) => next.allocations.push(Term::AddOrRetract(op, Ok(n1), a, Err(t2))),
-                        (None, None) => next.allocations.push(Term::AddOrRetract(op, Err(t1), a, Err(t2))),
-                    }
-                },
-                _ => panic!("At the disco"),
+        for UpsertEV(t1, a, t2) in self.upserts_ev {
+            match (temp_id_map.get(&*t1), temp_id_map.get(&*t2)) {
+                (Some(&n1), Some(&n2)) => next.resolved.push(Term::AddOrRetract(OpType::Add, n1, a, TypedValue::Ref(n2))),
+                (None, Some(&n2)) => next.upserts_e.push(UpsertE(t1, a, TypedValue::Ref(n2))),
+                (Some(&n1), None) => next.allocations.push(Term::AddOrRetract(OpType::Add, Ok(n1), a, Err(t2))),
+                (None, None) => next.allocations.push(Term::AddOrRetract(OpType::Add, Err(t1), a, Err(t2))),
             }
         }
 
@@ -306,22 +283,22 @@ impl Generation {
             match term {
                 Term::AddOrRetract(op, Err(t1), a, Err(t2)) => {
                     match (temp_id_map.get(&*t1), temp_id_map.get(&*t2)) {
-                        (Some(&n1), Some(&n2)) => next.resolved.push(Term::AddOrRetract(op, Ok(n1), a, Ok(TypedValue::Ref(n2)))),
+                        (Some(&n1), Some(&n2)) => next.resolved.push(Term::AddOrRetract(op, n1, a, TypedValue::Ref(n2))),
                         (None, Some(&n2)) => next.allocations.push(Term::AddOrRetract(op, Err(t1), a, Ok(TypedValue::Ref(n2)))),
                         (Some(&n1), None) => next.allocations.push(Term::AddOrRetract(op, Ok(n1), a, Err(t2))),
                         (None, None) => next.allocations.push(Term::AddOrRetract(op, Err(t1), a, Err(t2))),
                     }
                 },
-                Term::AddOrRetract(op, Err(t), a, v) => {
+                Term::AddOrRetract(op, Err(t), a, Ok(v)) => {
                     match temp_id_map.get(&*t) {
-                        Some(&n) => next.resolved.push(Term::AddOrRetract(op, Ok(n), a, v)),
-                        None => next.allocations.push(Term::AddOrRetract(op, Err(t), a, v)),
+                        Some(&n) => next.resolved.push(Term::AddOrRetract(op, n, a, v)),
+                        None => next.allocations.push(Term::AddOrRetract(op, Err(t), a, Ok(v))),
                     }
                 },
-                Term::AddOrRetract(op, e, a, Err(t)) => {
+                Term::AddOrRetract(op, Ok(e), a, Err(t)) => {
                     match temp_id_map.get(&*t) {
-                        Some(&n) => next.resolved.push(Term::AddOrRetract(op, e, a, Ok(TypedValue::Ref(n)))),
-                        None => next.allocations.push(Term::AddOrRetract(op, e, a, Err(t))),
+                        Some(&n) => next.resolved.push(Term::AddOrRetract(op, e, a, TypedValue::Ref(n))),
+                        None => next.allocations.push(Term::AddOrRetract(op, Ok(e), a, Err(t))),
                     }
                 },
                 Term::AddOrRetract(_, Ok(_), _, Ok(_)) => unreachable!(),
@@ -337,16 +314,11 @@ impl Generation {
     // Collect id->[a v] pairs.
     pub fn temp_id_avs<'a>(&'a self) -> Vec<(TempId, AVPair)> {
         let mut temp_id_avs: Vec<(TempId, AVPair)> = vec![];
-        for term in &self.upserts_e {
-            match term {
-                &Term::AddOrRetract(_, Err(ref t), ref a, Ok(ref v)) => {
-
-                    // TODO: figure out how to make this less expensive, i.e., don't require
-                    // clone() of an arbitrary value.
-                    temp_id_avs.push((t.clone(), (*a, v.clone())));
-                },
-                _ => panic!("At the disco"),
-            }
+        // TODO: map/collect.
+        for &UpsertE(ref t, ref a, ref v) in &self.upserts_e {
+            // TODO: figure out how to make this less expensive, i.e., don't require
+            // clone() of an arbitrary value.
+            temp_id_avs.push((t.clone(), (*a, v.clone())));
         }
         temp_id_avs
     }
@@ -384,8 +356,8 @@ impl Generation {
 
         let mut populations = FinalPopulations::default();
 
-        populations.upserted = self.upserted.into_iter().map(|term| term.unwrap()).collect();
-        populations.resolved = self.resolved.into_iter().map(|term| term.unwrap()).collect();
+        populations.upserted = self.upserted;
+        populations.resolved = self.resolved;
 
         for term in self.allocations {
             let allocated = match term {
