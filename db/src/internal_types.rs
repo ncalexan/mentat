@@ -22,8 +22,8 @@ use mentat_tx::entities::OpType;
 #[derive(Clone,Debug,Eq,Hash,Ord,PartialOrd,PartialEq)]
 pub enum Term<E, V> {
     AddOrRetract(OpType, E, Entid, V),
-    RetractAttribute(E, Entid),
-    RetractEntity(E)
+    // RetractAttribute(E, Entid),
+    // RetractEntity(E)
 }
 
 pub type EntidOr<T> = std::result::Result<Entid, T>;

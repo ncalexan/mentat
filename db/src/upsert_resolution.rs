@@ -13,31 +13,32 @@
 //! This module implements the upsert resolution algorithm described at
 //! https://github.com/mozilla/mentat/wiki/Transacting:-upsert-resolution-algorithm.
 
-use std::iter::{once};
+use std::collections::BTreeSet;
 
 use mentat_tx::entities::OpType;
 use errors;
 use types::{Attribute, AVPair, DB, Entid, TypedValue};
 use internal_types::*;
 
-// /// XXX Population type models 
-// #[derive(Clone,Debug,Eq,Hash,Ord,PartialOrd,PartialEq)]
-// enum PopulationType {
-//     /// "Simple upserts" that look like [:db/add TEMPID a v], where a is :db.unique/identity.
-//     UpsertsE,
+/// Population types classify entities into types that we care about.
+#[derive(Clone,Debug,Eq,Hash,Ord,PartialOrd,PartialEq)]
+enum PopulationType {
+    /// "Simple upserts" that look like [:db/add TEMPID a v], where a is :db.unique/identity.
+    UpsertsE,
 
-//     /// "Complex upserts" that look like [:db/add TEMPID a OTHERID], where a is :db.unique/identity
-//     UpsertsEV,
+    /// "Complex upserts" that look like [:db/add TEMPID a OTHERID], where a is :db.unique/identity
+    UpsertsEV,
 
-//     /// Entities that look like:
-//     /// - [:db/add TEMPID b OTHERID], where b is not :db.unique/identity;
-//     /// - [:db/add TEMPID b v], where b is not :db.unique/identity.
-//     /// - [:db/add e b OTHERID].
-//     Allocations,
+    /// Entities that look like:
+    /// - [:db/add TEMPID b OTHERID], where b is not :db.unique/identity;
+    /// - [:db/add TEMPID b v], where b is not :db.unique/identity.
+    /// - [:db/add e b OTHERID].
+    /// - [:db/{retract,retractAttribute,retractEntity}] that reference a TEMPID.
+    Allocations,
 
-//     /// Entities that do not reference temp IDs.
-//     Inert,
-// }
+    /// Entities that do not reference temp IDs.
+    Inert,
+}
 
 // /// A "Simple upsert" that looks like [:db/add TEMPID a v], where a is :db.unique/identity.
 // #[derive(Clone,Debug,Eq,Hash,Ord,PartialOrd,PartialEq)]
@@ -48,7 +49,7 @@ use internal_types::*;
 // struct UpsertEV(TempId, Attribute, Entid, TempId);
 
 // #[derive(Clone,Debug,Default,Eq,Hash,Ord,PartialOrd,PartialEq)]
-// struct Generation {
+// struct Genertaion {
 //     /// "Simple upserts" that look like [:db/add TEMPID a v], where a is :db.unique/identity.
 //     upserts_e: Vec<UpsertE>,
 
@@ -210,14 +211,8 @@ pub struct Generation {
     /// "Complex upserts" that look like [:db/add TEMPID a OTHERID], where a is :db.unique/identity
     upserts_ev: Population,
 
-    /// Entities that look like [:db/add TEMPID b OTHERID], where b is not :db.unique/identity.
-    allocations_ev: Population,
-
-    /// Entities that look like [:db/add TEMPID b OTHERID], where b is not :db.unique/identity.
-    allocations_e: Population,
-
-    /// Entities that look like [:db/add e b OTHERID], where b is not :db.unique/identity
-    allocations_v: Population,
+    /// XXX todo.
+    allocations: Population,
 
     /// Upserts that upserted.
     upserted: Population,
@@ -229,29 +224,6 @@ pub struct Generation {
     inert: Population,
 }
 
-#[derive(Clone,Debug,Eq,Hash,Ord,PartialOrd,PartialEq)]
-enum PopulationType {
-    /// "Simple upserts" that look like [:db/add TEMPID a v], where a is :db.unique/identity.
-    UpsertsE,
-
-    /// "Complex upserts" that look like [:db/add TEMPID a OTHERID], where a is :db.unique/identity
-    UpsertsEV,
-
-    /// Entities that look like [:db/add TEMPID b OTHERID], where b is not :db.unique/identity.
-    AllocationsEV,
-
-    /// Entities that look like [:db/add TEMPID b v], where b is not :db.unique/identity.
-    AllocationsE,
-
-    /// Entities that look like [:db/add e b OTHERID].
-    AllocationsV,
-
-    // TODO: ensure :db/retract{Entity,Attribute} are pushed into Allocations* correctly.
-
-    /// Entities that do not reference temp IDs.
-    Inert,
-}
-
 impl TermWithTempIds {
     fn population_type(&self, db: &DB) -> errors::Result<PopulationType> {
         let is_unique = |a: &Entid| -> errors::Result<bool> {
@@ -260,10 +232,10 @@ impl TermWithTempIds {
         };
 
         match self {
-            &Term::AddOrRetract(ref op, Err(_), ref a, Err(_)) => if op == &OpType::Add && is_unique(a)? { Ok(PopulationType::UpsertsEV) } else { Ok(PopulationType::AllocationsEV) },
-            &Term::AddOrRetract(ref op, Err(_), ref a, Ok(_)) => if op == &OpType::Add && is_unique(a)? { Ok(PopulationType::UpsertsE) } else { Ok(PopulationType::AllocationsE) },
-            &Term::AddOrRetract(_, Ok(_), _, Err(_)) => Ok(PopulationType::AllocationsV),
-            _ => Ok(PopulationType::Inert),
+            &Term::AddOrRetract(ref op, Err(_), ref a, Err(_)) => if op == &OpType::Add && is_unique(a)? { Ok(PopulationType::UpsertsEV) } else { Ok(PopulationType::Allocations) },
+            &Term::AddOrRetract(ref op, Err(_), ref a, Ok(_)) => if op == &OpType::Add && is_unique(a)? { Ok(PopulationType::UpsertsE) } else { Ok(PopulationType::Allocations) },
+            &Term::AddOrRetract(_, Ok(_), _, Err(_)) => Ok(PopulationType::Allocations),
+            &Term::AddOrRetract(_, Ok(_), _, Ok(_)) => Ok(PopulationType::Inert),
         }
     }
 }
@@ -276,9 +248,7 @@ impl Generation {
             match term.population_type(db)? {
                 PopulationType::UpsertsEV => generation.upserts_ev.push(term),
                 PopulationType::UpsertsE => generation.upserts_e.push(term),
-                PopulationType::AllocationsEV => generation.allocations_ev.push(term),
-                PopulationType::AllocationsE => generation.allocations_e.push(term),
-                PopulationType::AllocationsV => generation.allocations_v.push(term),
+                PopulationType::Allocations => generation.allocations.push(term),
                 PopulationType::Inert => generation.inert.push(term),
             }
         }
@@ -292,13 +262,14 @@ impl Generation {
 
     pub fn evolve_one_step(self, temp_id_map: &TempIdMap) -> Generation {
         let mut next = Generation::default();
+        next.inert = self.inert;
 
         for term in self.upserts_e {
             match term {
                 Term::AddOrRetract(op, Err(t), a, v) => {
                     match temp_id_map.get(&*t) {
                         Some(&n) => next.upserted.push(Term::AddOrRetract(op, Ok(n), a, v)),
-                        None => next.allocations_e.push(Term::AddOrRetract(op, Err(t), a, v)),
+                        None => next.allocations.push(Term::AddOrRetract(op, Err(t), a, v)),
                     }
                 },
                 _ => panic!("At the disco"),
@@ -311,61 +282,41 @@ impl Generation {
                     match (temp_id_map.get(&*t1), temp_id_map.get(&*t2)) {
                         (Some(&n1), Some(&n2)) => next.resolved.push(Term::AddOrRetract(op, Ok(n1), a, Ok(TypedValue::Ref(n2)))),
                         (None, Some(&n2)) => next.upserts_e.push(Term::AddOrRetract(op, Err(t1), a, Ok(TypedValue::Ref(n2)))),
-                        (Some(&n1), None) => next.allocations_v.push(Term::AddOrRetract(op, Ok(n1), a, Err(t2))),
-                        (None, None) => next.allocations_ev.push(Term::AddOrRetract(op, Err(t1), a, Err(t2))),
+                        (Some(&n1), None) => next.allocations.push(Term::AddOrRetract(op, Ok(n1), a, Err(t2))),
+                        (None, None) => next.allocations.push(Term::AddOrRetract(op, Err(t1), a, Err(t2))),
                     }
                 },
                 _ => panic!("At the disco"),
             }
         }
 
-        // TODO: handle all allocations uniformly? // .into_iter().chain(self.allocations_e.into_iter()).chain(self.allocations_v.into_iter()) {
-        for term in self.allocations_ev {
+        for term in self.allocations {
             match term {
                 Term::AddOrRetract(op, Err(t1), a, Err(t2)) => {
                     match (temp_id_map.get(&*t1), temp_id_map.get(&*t2)) {
                         (Some(&n1), Some(&n2)) => next.resolved.push(Term::AddOrRetract(op, Ok(n1), a, Ok(TypedValue::Ref(n2)))),
-                        (None, Some(&n2)) => next.allocations_e.push(Term::AddOrRetract(op, Err(t1), a, Ok(TypedValue::Ref(n2)))),
-                        (Some(&n1), None) => next.allocations_v.push(Term::AddOrRetract(op, Ok(n1), a, Err(t2))),
-                        (None, None) => next.allocations_ev.push(Term::AddOrRetract(op, Err(t1), a, Err(t2))),
+                        (None, Some(&n2)) => next.allocations.push(Term::AddOrRetract(op, Err(t1), a, Ok(TypedValue::Ref(n2)))),
+                        (Some(&n1), None) => next.allocations.push(Term::AddOrRetract(op, Ok(n1), a, Err(t2))),
+                        (None, None) => next.allocations.push(Term::AddOrRetract(op, Err(t1), a, Err(t2))),
                     }
                 },
-                _ => panic!("At the disco"),
-            }
-        }
-
-        // TODO: same as upserts_e!
-        for term in self.allocations_e {
-            match term {
                 Term::AddOrRetract(op, Err(t), a, v) => {
                     match temp_id_map.get(&*t) {
                         Some(&n) => next.resolved.push(Term::AddOrRetract(op, Ok(n), a, v)),
-                        None => next.allocations_e.push(Term::AddOrRetract(op, Err(t), a, v)),
+                        None => next.allocations.push(Term::AddOrRetract(op, Err(t), a, v)),
                     }
                 },
-                _ => panic!("At the disco"),
-            }
-        }
-
-        for term in self.allocations_v {
-            match term {
                 Term::AddOrRetract(op, e, a, Err(t)) => {
                     match temp_id_map.get(&*t) {
                         Some(&n) => next.resolved.push(Term::AddOrRetract(op, e, a, Ok(TypedValue::Ref(n)))),
-                        None => next.allocations_v.push(Term::AddOrRetract(op, e, a, Err(t))),
+                        None => next.allocations.push(Term::AddOrRetract(op, e, a, Err(t))),
                     }
                 },
-                _ => panic!("At the disco"),
+                Term::AddOrRetract(_, Ok(_), _, Ok(_)) => unreachable!(),
             }
         }
 
-        next.inert = self.inert;
-
         next
-
-        // AddOrRetract(OpType, E, Entid, V),
-        // RetractAttribute(E, Entid),
-        // RetractEntity(E)
     }
 
     // TODO: assert invariants all around the joint.
@@ -388,41 +339,36 @@ impl Generation {
         temp_id_avs
     }
 
-    /// Return type is Box<> since `impl Trait` is not yet stable.
-    pub fn temp_ids_iter<'a>(&'a self) -> Box<Iterator<Item=TempId> + 'a> {
-        let i1 = self.upserts_e.iter().chain(self.allocations_e.iter()).map(|term| {
-            match term {
-                &Term::AddOrRetract(_, Err(ref t), _, _) => t.clone(),
-                _ => panic!("At the disco"),
-            }
-        });
+    pub fn temp_ids_in_allocations(&self) -> BTreeSet<TempId> {
+        assert!(self.upserts_e.is_empty(), "All upserts should have been upserted, resolved, or moved to the allocated population!");
+        assert!(self.upserts_e.is_empty(), "All upserts should have been upserted, resolved, or moved to the allocated population!");
 
-        let i2 = self.upserts_ev.iter().chain(self.allocations_ev.iter()).flat_map(|term| {
+        let mut temp_ids: BTreeSet<TempId> = BTreeSet::default();
+
+        for term in self.allocations.iter() {
             match term {
                 &Term::AddOrRetract(_, Err(ref t1), _, Err(ref t2)) => {
-                    once(t1.clone()).chain(once(t2.clone()))
+                    temp_ids.insert(t1.clone());
+                    temp_ids.insert(t2.clone());
                 },
-                _ => panic!("At the disco"),
+                &Term::AddOrRetract(_, Err(ref t), _, Ok(_)) => {
+                    temp_ids.insert(t.clone());
+                },
+                &Term::AddOrRetract(_, Ok(_), _, Err(ref t)) => {
+                    temp_ids.insert(t.clone());
+                },
+                &Term::AddOrRetract(_, Ok(_), _, Ok(_)) => unreachable!(),
             }
-        });
+        }
 
-        let i3 = self.allocations_v.iter().map(|term| {
-            match term {
-                &Term::AddOrRetract(_, _, _, Err(ref t)) => t.clone(),
-                _ => panic!("At the disco"),
-            }
-        });
-
-        Box::new(i1.chain(i2).chain(i3))
+        temp_ids
     }
 
     pub fn into_allocated_iter<'a>(self, temp_id_map: TempIdMap) -> Box<Iterator<Item=TermWithoutTempIds> + 'a> {
         assert!(self.upserts_e.is_empty());
         assert!(self.upserts_ev.is_empty());
 
-        let i1 = self.allocations_ev.into_iter()
-            .chain(self.allocations_e.into_iter())
-            .chain(self.allocations_v.into_iter())
+        let i1 = self.allocations.into_iter()
             .map(move |term| {
                 match term {
                     Term::AddOrRetract(op, Err(t1), a, Err(t2)) => {

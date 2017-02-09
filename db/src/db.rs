@@ -1146,7 +1146,7 @@ impl DB {
                     // let y: EntidOr<TempId> = replace_lookup_ref(&lookup_map, e)?;
                     Ok(Term::AddOrRetract(op, replace_lookup_ref(&lookup_map, e, |x| x)?, a, replace_lookup_ref(&lookup_map, v, |x| TypedValue::Ref(x))?))
                 },
-                _ => bail!(ErrorKind::NotYetImplemented(format!("Transacting this entity is not yet implemented: {:?}", 1))) // XXX
+                // _ => bail!(ErrorKind::NotYetImplemented(format!("Transacting this entity is not yet implemented: {:?}", 1))) // XXX
             }
         }).collect();
         let terms = terms?;
@@ -1166,8 +1166,7 @@ impl DB {
         println!("Finished evolving; final generation: {:?}", generation);
 
         // Allocate entids for temp IDs that didn't upsert.  BTreeSet rather than HashSet so this is deterministic.
-        // TODO: assert invariant: upserts_{e,ev} are both empty.
-        let unresolved_temp_ids: BTreeSet<TempId> = generation.temp_ids_iter().collect();
+        let unresolved_temp_ids: BTreeSet<TempId> = generation.temp_ids_in_allocations();
         // TODO: track partitions for temporary IDs.
         let entids = self.allocate_entids(":db.part/user".to_string(), unresolved_temp_ids.len());
 
@@ -1192,7 +1191,7 @@ impl DB {
                         non_fts_one.push((e, a, v, added));
                     }
                 },
-                _ => bail!(ErrorKind::NotYetImplemented(format!("Transacting this term is not yet implemented: {:?}", term))) // TODO: reference original input.  Difficult!
+                // _ => bail!(ErrorKind::NotYetImplemented(format!("Transacting this term is not yet implemented: {:?}", term))) // TODO: reference original input.  Difficult!
             }
         }
 
