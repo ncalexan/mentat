@@ -37,6 +37,8 @@ mod entids;
 mod errors;
 mod schema;
 mod types;
+mod internal_types;
+mod upsert_resolution;
 mod values;
 
 use edn::symbols;

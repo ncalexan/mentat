@@ -10,6 +10,7 @@
 
 #![allow(dead_code)]
 
+use std;
 use std::collections::{BTreeSet, HashMap};
 use std::iter::{once, repeat};
 use std::ops::Range;
@@ -28,6 +29,7 @@ use mentat_core::intern_set;
 use mentat_tx::entities as entmod;
 use mentat_tx::entities::{Entity, OpType};
 use types::*;
+use internal_types::*;
 
 pub fn new_connection() -> rusqlite::Connection {
     return rusqlite::Connection::open_in_memory().unwrap();
@@ -452,37 +454,6 @@ pub enum SearchType {
 // Take Allocations* and the complement of AddWithTempIds, allocate entids, and TermWithTempIds -> TermWithoutTempIds
 // TermWithoutTempIds -> temporary tables.
 
-#[derive(Clone,Debug,Eq,Hash,Ord,PartialOrd,PartialEq)]
-enum Term<E, V> {
-    AddOrRetract(OpType, E, Entid, V),
-    RetractAttribute(E, Entid),
-    RetractEntity(E)
-}
-
-type EntidOr<T> = std::result::Result<Entid, T>;
-type TypedValueOr<T> = std::result::Result<TypedValue, T>;
-
-use std::rc::Rc;
-
-use std; // ::result;
-
-type TempId = Rc<String>;
-type LookupRef = Rc<AVPair>;
-
-/// Internal representation of an entid on its way to resolution.  We either have the simple case (a
-/// numeric entid), a lookup-ref that still needs to be resolved (an atomized [a v] pair), or a temp
-/// ID that needs to be upserted or allocated (an atomized temp ID).
-#[derive(Clone,Debug,Eq,Hash,Ord,PartialOrd,PartialEq)]
-enum LookupRefOrTempId {
-    LookupRef(LookupRef),
-    TempId(TempId)
-}
-
-type TermWithTempIdsAndLookupRefs = Term<EntidOr<LookupRefOrTempId>, TypedValueOr<LookupRefOrTempId>>;
-type TermWithTempIds = Term<EntidOr<TempId>, TypedValueOr<TempId>>;
-type TermWithoutTempIds = Term<Entid, TypedValue>;
-type Population = Vec<TermWithTempIds>;
-
 /// "Simple upserts" that look like [:db/add TEMPID a v], where a is :db.unique/identity.
 // TODO: TypedValue!
 struct UpsertsE(TempId, Entid, Value);
@@ -745,8 +716,6 @@ impl Generation {
         Box::new(i1.chain(i2))
     }
 }
-
-type TempIdMap = HashMap<TempId, Entid>;
 
 impl DB {
     /// Do schema-aware typechecking and coercion.
