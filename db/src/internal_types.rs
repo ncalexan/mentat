@@ -47,3 +47,15 @@ pub type TermWithTempIdsAndLookupRefs = Term<EntidOr<LookupRefOrTempId>, TypedVa
 pub type TermWithTempIds = Term<EntidOr<TempId>, TypedValueOr<TempId>>;
 pub type TermWithoutTempIds = Term<Entid, TypedValue>;
 pub type Population = Vec<TermWithTempIds>;
+
+impl TermWithTempIds {
+    // These have no temp IDs by definition, and just need to be unwrapped.  This operation might
+    // also be called "lowering" or "level lowering", but the concept of "unwrapping" is common in
+    // Rust and seems appropriate here.
+    pub fn unwrap(self) -> TermWithoutTempIds {
+        match self {
+            Term::AddOrRetract(op, Ok(n), a, Ok(v)) => Term::AddOrRetract(op, n, a, v),
+            _ => unreachable!(),
+        }
+    }
+}

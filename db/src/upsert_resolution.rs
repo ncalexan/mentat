@@ -219,9 +219,18 @@ pub struct Generation {
 
     /// Allocations that resolved due to other upserts.
     resolved: Population,
+}
 
-    /// Entities that do not reference temp IDs.
-    inert: Population,
+#[derive(Clone,Debug,Default,Eq,Hash,Ord,PartialOrd,PartialEq)]
+pub struct FinalPopulations {
+    /// Upserts that upserted.
+    pub upserted: Vec<TermWithoutTempIds>,
+
+    /// Allocations that resolved due to other upserts.
+    pub resolved: Vec<TermWithoutTempIds>,
+
+    /// Allocations that required new entid allocations.
+    pub allocated: Vec<TermWithoutTempIds>,
 }
 
 impl TermWithTempIds {
@@ -241,19 +250,23 @@ impl TermWithTempIds {
 }
 
 impl Generation {
-    pub fn from<I>(terms: I, db: &DB) -> errors::Result<Generation> where I: IntoIterator<Item=TermWithTempIds> {
+
+    /// Split entities into a generation of populations that need to evolve to have their temp IDs
+    /// resolved or allocated, and a population of inert entities that do not reference temp IDs.
+    pub fn from<I>(terms: I, db: &DB) -> errors::Result<(Generation, Population)> where I: IntoIterator<Item=TermWithTempIds> {
         let mut generation = Generation::default();
+        let mut inert = vec![];
 
         for term in terms.into_iter() {
             match term.population_type(db)? {
                 PopulationType::UpsertsEV => generation.upserts_ev.push(term),
                 PopulationType::UpsertsE => generation.upserts_e.push(term),
                 PopulationType::Allocations => generation.allocations.push(term),
-                PopulationType::Inert => generation.inert.push(term),
+                PopulationType::Inert => inert.push(term),
             }
         }
 
-        Ok(generation)
+        Ok((generation, inert))
     }
 
     pub fn can_evolve(&self) -> bool {
@@ -262,7 +275,6 @@ impl Generation {
 
     pub fn evolve_one_step(self, temp_id_map: &TempIdMap) -> Generation {
         let mut next = Generation::default();
-        next.inert = self.inert;
 
         for term in self.upserts_e {
             match term {
@@ -364,48 +376,43 @@ impl Generation {
         temp_ids
     }
 
-    pub fn into_allocated_iter<'a>(self, temp_id_map: TempIdMap) -> Box<Iterator<Item=TermWithoutTempIds> + 'a> {
+    /// After allocating entids for the given tempids, segment `self` into populations, each with no
+    /// references to tempids.
+    pub fn into_final_populations(self, temp_id_map: &TempIdMap) -> FinalPopulations {
         assert!(self.upserts_e.is_empty());
         assert!(self.upserts_ev.is_empty());
 
-        let i1 = self.allocations.into_iter()
-            .map(move |term| {
-                match term {
-                    Term::AddOrRetract(op, Err(t1), a, Err(t2)) => {
-                        // TODO: consider require on temp_id_map.
-                        match (temp_id_map.get(&*t1), temp_id_map.get(&*t2)) {
-                            (Some(&n1), Some(&n2)) => Term::AddOrRetract(op, n1, a, TypedValue::Ref(n2)),
-                            _ => panic!("At the disco"),
-                        }
-                    },
-                    Term::AddOrRetract(op, Err(t), a, Ok(v)) => {
-                        match temp_id_map.get(&*t) {
-                            Some(&n) => (Term::AddOrRetract(op, n, a, v)),
-                            _ => panic!("At the disco"),
-                        }
-                    },
-                    Term::AddOrRetract(op, Ok(e), a, Err(t)) => {
-                        match temp_id_map.get(&*t) {
-                            Some(&n) => Term::AddOrRetract(op, e, a, TypedValue::Ref(n)),
-                            _ => panic!("At the disco"),
-                        }
-                    },
-                    _ => panic!("At the disco"),
-                }
-            });
+        let mut populations = FinalPopulations::default();
 
-        // These have no temp IDs by definition, and just need to be lowered.
-        let i2 = self.resolved.into_iter()
-            .chain(self.inert.into_iter())
-            .map(|term| {
-                match term {
-                    Term::AddOrRetract(op, Ok(n), a, Ok(v)) => {
-                        Term::AddOrRetract(op, n, a, v)
-                    },
-                    _ => panic!("At the disco"),
-                }
-            });
+        populations.upserted = self.upserted.into_iter().map(|term| term.unwrap()).collect();
+        populations.resolved = self.resolved.into_iter().map(|term| term.unwrap()).collect();
 
-        Box::new(i1.chain(i2))
+        for term in self.allocations {
+            let allocated = match term {
+                // TODO: consider require implementing require on temp_id_map.
+                Term::AddOrRetract(op, Err(t1), a, Err(t2)) => {
+                    match (temp_id_map.get(&*t1), temp_id_map.get(&*t2)) {
+                        (Some(&n1), Some(&n2)) => Term::AddOrRetract(op, n1, a, TypedValue::Ref(n2)),
+                        _ => unreachable!(),
+                    }
+                },
+                Term::AddOrRetract(op, Err(t), a, Ok(v)) => {
+                    match temp_id_map.get(&*t) {
+                        Some(&n) => Term::AddOrRetract(op, n, a, v),
+                        _ => unreachable!(),
+                    }
+                },
+                Term::AddOrRetract(op, Ok(e), a, Err(t)) => {
+                    match temp_id_map.get(&*t) {
+                        Some(&n) => Term::AddOrRetract(op, e, a, TypedValue::Ref(n)),
+                        _ => unreachable!(),
+                    }
+                },
+                Term::AddOrRetract(_, Ok(_), _, Ok(_)) => unreachable!(),
+            };
+            populations.allocated.push(allocated);
+        }
+
+        populations
     }
 }
