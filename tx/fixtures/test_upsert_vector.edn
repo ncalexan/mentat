@@ -1,0 +1,59 @@
+[{:test/label ":db.cardinality/one, insert"
+  :test/assertions
+  [[:db/add 100 :db/ident :name/Ivan]
+   [:db/add 101 :db/ident :name/Petr]]
+  :test/expectedtransaction
+  #{[100 :db/ident :name/Ivan ?tx1 true]
+    [101 :db/ident :name/Petr ?tx1 true]
+    [?tx1 :db/txInstant ?ms1 ?tx1 true]}
+  :test/expecteddatoms
+  #{[100 :db/ident :name/Ivan]
+    [101 :db/ident :name/Petr]}}
+
+ {:test/label "upsert two tempids to same entid"
+  :test/assertions
+  [[:db/add "t1" :db/ident :name/Ivan]
+   [:db/add "t1" :db.schema/attribute 100]
+   [:db/add "t2" :db/ident :name/Petr]
+   [:db/add "t2" :db.schema/attribute 101]]
+  :test/expectedtransaction
+  #{[100 :db.schema/attribute 100 ?tx2 true]
+    [101 :db.schema/attribute 101 ?tx2 true]
+    [?tx2 :db/txInstant ?ms2 ?tx2 true]}
+  :test/expecteddatoms
+  #{[100 :db/ident :name/Ivan]
+    [101 :db/ident :name/Petr]
+    [100 :db.schema/attribute 100]
+    [101 :db.schema/attribute 101]}
+  :test/expectedtempids
+  {"t1" 100
+   "t2" 101}}
+
+ {:test/label "upsert with tempid"
+  :test/assertions
+  [[:db/add "t1" :db/ident :name/Ivan]
+   ;; Ref doesn't have to exist (at this time).  Can't reuse due to :db/unique :db.unique/value.
+   [:db/add "t1" :db.schema/attribute 102]]
+  :test/expectedtransaction
+  #{[100 :db.schema/attribute 102 ?tx3 true]
+    [?tx3 :db/txInstant ?ms3 ?tx3 true]}
+  :test/expecteddatoms
+  #{[100 :db/ident :name/Ivan]
+    [101 :db/ident :name/Petr]
+    [100 :db.schema/attribute 100]
+    [100 :db.schema/attribute 102]
+    [101 :db.schema/attribute 101]}
+  :test/expectedtempids
+  {"t1" 100}}
+
+ {:test/label "conflicting upserts fail"
+  :test/assertions
+  [[:db/add "t1" :db/ident :name/Ivan]
+   [:db/add "t1" :db/ident :name/Petr]]
+  :test/expectedtransaction
+  nil
+  :test/expectederrormessage
+  ""
+  ;; nil
+  }
+ ]
