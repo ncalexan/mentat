@@ -472,6 +472,7 @@ enum LookupRefOrTempId {
     TempId(TempId)
 }
 
+type TermWithTempIdsAndLookupRefs = Term<EntidOr<LookupRefOrTempId>, TypedValueOr<LookupRefOrTempId>>;
 type TermWithTempIds = Term<EntidOr<TempId>, TypedValueOr<TempId>>;
 type TermWithoutTempIds = Term<Entid, TypedValue>;
 type Population = Vec<TermWithTempIds>;
@@ -1175,8 +1176,8 @@ impl DB {
         // Right now, this could be a for loop, saving some mapping, collecting, and type
         // annotations.  However, I expect it to be a multi-stage map as we start to transform the
         // underlying entities, in which case this expression is more natural than for loops.
-        let terms: Vec<Result<Term<EntidOr<LookupRefOrTempId>, TypedValueOr<LookupRefOrTempId>>>> = entities.into_iter()
-            .map(|entity: Entity| -> Result<Term<EntidOr<LookupRefOrTempId>, TypedValueOr<LookupRefOrTempId>>> {
+        let terms: Vec<Result<TermWithTempIdsAndLookupRefs>> = entities.into_iter()
+            .map(|entity: Entity| -> Result<TermWithTempIdsAndLookupRefs> {
             match entity {
                 // Entity::Map {
                 //     map: map,
@@ -1346,7 +1347,7 @@ impl DB {
     //         })
             .collect();
 
-        let terms: Result<Vec<Term<EntidOr<LookupRefOrTempId>, TypedValueOr<LookupRefOrTempId>>>> = terms.into_iter().collect();
+        let terms: Result<Vec<TermWithTempIdsAndLookupRefs>> = terms.into_iter().collect();
         let terms = terms?;
 
         let avs: Vec<&(i64, TypedValue)> = lookup_refs.inner.iter().map(|rc| &**rc).collect();
@@ -1367,7 +1368,7 @@ impl DB {
             }
         };
 
-        let terms: Result<Vec<Term<EntidOr<TempId>, TypedValueOr<TempId>>>> = terms.into_iter().map(|term: Term<EntidOr<LookupRefOrTempId>, TypedValueOr<LookupRefOrTempId>>| -> Result<Term<EntidOr<TempId>, TypedValueOr<TempId>>> {
+        let terms: Result<Vec<TermWithTempIds>> = terms.into_iter().map(|term: TermWithTempIdsAndLookupRefs| -> Result<TermWithTempIds> {
             match term {
                 Term::AddOrRetract(op, e, a, v) => {
                     // let x: EntidOr<LookupRefOrTempId> = e;
@@ -1441,7 +1442,7 @@ impl DB {
 
         let temp_id_allocations: TempIdMap = unresolved_temp_ids.into_iter().zip(entids).collect();
 
-        let final_terms: Vec<Term<Entid, TypedValue>> = generation.into_allocated_iter(temp_id_allocations).collect();
+        let final_terms: Vec<TermWithoutTempIds> = generation.into_allocated_iter(temp_id_allocations).collect();
 
         // Collect into non_fts_*.
         // TODO: use something like Clojure's group_by to do this.
