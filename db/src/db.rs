@@ -476,6 +476,25 @@ type TermWithTempIds = Term<EntidOr<TempId>, ValueOr<TempId>>;
 type TermWithoutTempIds = Term<Entid, Value>;
 type Population = Vec<TermWithTempIds>;
 
+/// "Simple upserts" that look like [:db/add TEMPID a v], where a is :db.unique/identity.
+// TODO: TypedValue!
+struct UpsertsE(TempId, Entid, Value);
+
+/// "Complex upserts" that look like [:db/add TEMPID a OTHERID], where a is :db.unique/identity
+struct UpsertsEV(TempId, Entid, TempId);
+
+/// Entities that look like [:db/add TEMPID b OTHERID], where b is not :db.unique/identity.
+struct AllocationsEV(TempId, Entid, TempId);
+
+/// Entities that look like [:db/add TEMPID b v], where b is not :db.unique/identity.
+struct AllocationsE(TempId, Entid, Value);
+
+/// Entities that look like [:db/add e b OTHERID].
+struct AllocationsV(Entid, Entid, TempId);
+
+/// Entities that do not reference temp IDs.
+struct Inert(Entid, Entid, Value);
+
 #[derive(Clone,Debug,Default,Eq,Hash,Ord,PartialOrd,PartialEq)]
 struct Generation {
     /// "Simple upserts" that look like [:db/add TEMPID a v], where a is :db.unique/identity.
