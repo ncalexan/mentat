@@ -446,6 +446,12 @@ pub enum SearchType {
 // [RetractAttribute Entid|(LookupRef|TempId) Entid]
 // [RetractEntity    Entid|(LookupRef|TempId)]
 
+// Resolve all lookup refs: TermWithTempIdsAndLookupRefs -> TermWithTempIds.
+// Split AddWithTempIds from everything else.  Do upsert resolution, tracking anything that upserts and anything that resolves.
+// Retract, RetractAttribute, RetractEntity cannot have non-resolved temp ID!
+// Take Allocations* and the complement of AddWithTempIds, allocate entids, and TermWithTempIds -> TermWithoutTempIds
+// TermWithoutTempIds -> temporary tables.
+
 #[derive(Clone,Debug,Eq,Hash,Ord,PartialOrd,PartialEq)]
 enum Term<E, V> {
     AddOrRetract(OpType, E, Entid, V),
