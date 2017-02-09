@@ -42,7 +42,7 @@ pub enum EntidOrLookupRefOrTempId {
     TempId(String),
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialOrd, PartialEq)]
 pub enum OpType {
     Add,
     Retract,
