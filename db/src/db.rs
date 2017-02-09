@@ -1298,16 +1298,16 @@ mod tests {
 
                 let transactions = debug::transactions_after(&conn, &db, bootstrap::TX0 + index).unwrap();
                 assert_eq!(transactions.0.len(), 1);
-                assert_eq!(transactions.0[0].into_edn(),
-                           *expected_transaction,
-                           "\n{} - expected transaction:\n{}\nbut got transaction:\n{}", label, transactions.0[0].into_edn(), *expected_transaction);
+                assert_eq!(*expected_transaction,
+                           transactions.0[0].into_edn(),
+                           "\n{} - expected transaction:\n{}\nbut got transaction:\n{}", label, *expected_transaction, transactions.0[0].into_edn());
             }
 
             if let Some(expected_datoms) = expected_datoms {
                 let datoms = debug::datoms_after(&conn, &db, bootstrap::TX0).unwrap();
-                assert_eq!(datoms.into_edn(),
-                           *expected_datoms,
-                           "\n{} - expected datoms:\n{}\nbut got datoms:\n{}", label, datoms.into_edn(), *expected_datoms);
+                assert_eq!(*expected_datoms,
+                           datoms.into_edn(),
+                           "\n{} - expected datoms:\n{}\nbut got datoms:\n{}", label, *expected_datoms, datoms.into_edn())
             }
 
             // Don't allow empty tests.  This will need to change if we allow transacting schema
