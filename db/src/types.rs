@@ -12,7 +12,6 @@
 
 use std::collections::HashMap;
 use std::collections::BTreeMap;
-use edn::OrderedFloat;
 
 extern crate mentat_core;
 
@@ -102,14 +101,14 @@ impl DB {
         }
     }
 
-    pub fn allocate_temp_id<T>(&mut self, partition: T) -> TempId where T: Into<String> {
-        let idx = self.next_temp_id_idx;
-        self.next_temp_id_idx -= 1;
-        TempId {
-            partition: partition.into(),
-            idx: idx,
-        }
-    }
+    // pub fn allocate_temp_id<T>(&mut self, partition: T) -> TempId where T: Into<String> {
+    //     let idx = self.next_temp_id_idx;
+    //     self.next_temp_id_idx -= 1;
+    //     TempId {
+    //         partition: partition.into(),
+    //         idx: idx,
+    //     }
+    // }
 }
 
 /// Represents a temporary ID on its way to being resolved.
@@ -118,7 +117,7 @@ impl DB {
 /// that may include `IdLiteral` instances; such id literals are indepedent of a `DB` instance.  As
 /// they are transacted, each id literal is resolved to a concrete `TempId` instance.
 #[derive(Clone,Debug,Eq,Hash,Ord,PartialOrd,PartialEq)]
-pub struct TempId {
+pub struct TempIdX {
     /// The partition the entid this ID literal is resolved to will be allocated in.
     partition: String,
 
@@ -148,6 +147,6 @@ pub struct TxReport {
     // TODO: :db.type/instant.
     pub tx_instant: i64,
 
-    /// A map from temporary ID to allocated entid.
-    pub temp_ids: BTreeMap<TempId, Entid>,
+    // /// A map from temporary ID to allocated entid.
+    // pub temp_ids: BTreeMap<TempId, Entid>,
 }

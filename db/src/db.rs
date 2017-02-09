@@ -10,8 +10,8 @@
 
 #![allow(dead_code)]
 
-use std::collections::{BTreeMap, HashMap};
-use std::iter::once;
+use std::collections::{BTreeSet, HashMap};
+use std::iter::{once, repeat};
 use std::ops::Range;
 
 use itertools;
@@ -24,6 +24,7 @@ use bootstrap;
 use edn::types::Value;
 use entids;
 use errors::*;
+use mentat_core::intern_set;
 use mentat_tx::entities as entmod;
 use mentat_tx::entities::{Entity, OpType};
 use types::*;
@@ -177,7 +178,7 @@ pub fn create_current_version(conn: &mut rusqlite::Connection) -> Result<DB> {
 
     // TODO: return to transact_internal to self manage the encompassing SQLite transaction.
     let mut bootstrap_db = DB::new(bootstrap_partition_map, bootstrap::bootstrap_schema());
-    bootstrap_db.transact(&tx, &bootstrap::bootstrap_entities()[..])?;
+    bootstrap_db.transact(&tx, bootstrap::bootstrap_entities())?;
 
     set_user_version(&tx, CURRENT_VERSION)?;
 
@@ -415,6 +416,311 @@ pub enum SearchType {
     Exact,
     Inexact,
 }
+
+// /// A transaction on its way to being committed.
+// struct Tx<'a> {
+//     /// The transaction ID of the transaction.
+//     tx: Entid,
+
+//     /// The timestamp when the transaction first began to be committed.
+//     ///
+//     /// This is milliseconds after the Unix epoch according to the transactor's local clock.
+//     // TODO: :db.type/instant.
+//     tx_instant: i64,
+
+//     // XXX /// A map from temporary ID to allocated entid.
+//     temp_ids: BTreeSet<TempID>, // , Entid>,
+
+//     // /// The input entities to be transacted.
+//     // input_entities: &'a Vec<Entity>,
+
+//     // inner_entities: Vec<InnerEntity<'a>>,
+
+//     // struct Tx<'a> {
+//     db: &'a DB,
+
+// //     }
+// }
+
+// [Add|Retract      Entid|(LookupRef|TempId) Entid Value|(LookupRef|TempId)]
+// [RetractAttribute Entid|(LookupRef|TempId) Entid]
+// [RetractEntity    Entid|(LookupRef|TempId)]
+
+#[derive(Clone,Debug,Eq,Hash,Ord,PartialOrd,PartialEq)]
+enum Term<E, V> {
+    AddOrRetract(OpType, E, Entid, V),
+    RetractAttribute(E, Entid),
+    RetractEntity(E)
+}
+
+type EntidOr<T> = std::result::Result<Entid, T>;
+type ValueOr<T> = std::result::Result<Value, T>;
+
+use std::rc::Rc;
+
+use std; // ::result;
+
+type TempId = Rc<String>;
+type LookupRef = Rc<AVPair>;
+
+/// Internal representation of an entid on its way to resolution.  We either have the simple case (a
+/// numeric entid), a lookup-ref that still needs to be resolved (an atomized [a v] pair), or a temp
+/// ID that needs to be upserted or allocated (an atomized temp ID).
+#[derive(Clone,Debug,Eq,Hash,Ord,PartialOrd,PartialEq)]
+enum LookupRefOrTempId {
+    LookupRef(LookupRef),
+    TempId(TempId)
+}
+
+type TermWithTempIds = Term<EntidOr<TempId>, ValueOr<TempId>>;
+type TermWithoutTempIds = Term<Entid, Value>;
+type Population = Vec<TermWithTempIds>;
+
+#[derive(Clone,Debug,Default,Eq,Hash,Ord,PartialOrd,PartialEq)]
+struct Generation {
+    /// "Simple upserts" that look like [:db/add TEMPID a v], where a is :db.unique/identity.
+    upserts_e: Population,
+
+    /// "Complex upserts" that look like [:db/add TEMPID a OTHERID], where a is :db.unique/identity
+    upserts_ev: Population,
+
+    /// Entities that look like [:db/add TEMPID b OTHERID], where b is not :db.unique/identity.
+    allocations_ev: Population,
+
+    /// Entities that look like [:db/add TEMPID b OTHERID], where b is not :db.unique/identity.
+    allocations_e: Population,
+
+    /// Entities that look like [:db/add e b OTHERID], where b is not :db.unique/identity
+    allocations_v: Population,
+
+    /// Upserts that upserted.
+    upserted: Population,
+
+    /// Allocations that resolved due to other upserts.
+    resolved: Population,
+
+    /// Entities that do not reference temp IDs.
+    inert: Population,
+}
+
+#[derive(Clone,Debug,Eq,Hash,Ord,PartialOrd,PartialEq)]
+enum PopulationType {
+    /// "Simple upserts" that look like [:db/add TEMPID a v], where a is :db.unique/identity.
+    UpsertsE,
+
+    /// "Complex upserts" that look like [:db/add TEMPID a OTHERID], where a is :db.unique/identity
+    UpsertsEV,
+
+    /// Entities that look like [:db/add TEMPID b OTHERID], where b is not :db.unique/identity.
+    AllocationsEV,
+
+    /// Entities that look like [:db/add TEMPID b v], where b is not :db.unique/identity.
+    AllocationsE,
+
+    /// Entities that look like [:db/add e b OTHERID].
+    AllocationsV,
+
+    // TODO: ensure :db/retract{Entity,Attribute} are pushed into Allocations* correctly.
+
+    /// Entities that do not reference temp IDs.
+    Inert,
+}
+
+impl TermWithTempIds {
+    fn population_type(&self, db: &DB) -> Result<PopulationType> {
+        let is_unique = |a: &Entid| -> Result<bool> {
+            let attribute: &Attribute = db.schema.require_attribute_for_entid(a)?;
+            Ok(attribute.unique_identity)
+        };
+
+        match self {
+            &Term::AddOrRetract(ref op, std::result::Result::Err(_), ref a, std::result::Result::Err(_)) => if op == &OpType::Add && is_unique(a)? { Ok(PopulationType::UpsertsEV) } else { Ok(PopulationType::AllocationsEV) },
+            &Term::AddOrRetract(ref op, std::result::Result::Err(_), ref a, std::result::Result::Ok(_)) => if op == &OpType::Add && is_unique(a)? { Ok(PopulationType::UpsertsE) } else { Ok(PopulationType::AllocationsE) },
+            &Term::AddOrRetract(_, std::result::Result::Ok(_), _, std::result::Result::Err(_)) => Ok(PopulationType::AllocationsV),
+            _ => Ok(PopulationType::Inert),
+        }
+    }
+}
+
+impl Generation {
+    pub fn from<I>(terms: I, db: &DB) -> Result<Generation> where I: IntoIterator<Item=TermWithTempIds> {
+        let mut generation = Generation::default();
+
+        for term in terms.into_iter() {
+            match term.population_type(db)? {
+                PopulationType::UpsertsEV => generation.upserts_ev.push(term),
+                PopulationType::UpsertsE => generation.upserts_e.push(term),
+                PopulationType::AllocationsEV => generation.allocations_ev.push(term),
+                PopulationType::AllocationsE => generation.allocations_e.push(term),
+                PopulationType::AllocationsV => generation.allocations_v.push(term),
+                PopulationType::Inert => generation.inert.push(term),
+            }
+        }
+
+        Ok(generation)
+    }
+
+    fn can_evolve(&self) -> bool {
+        !self.upserts_e.is_empty()
+    }
+
+    fn evolve_one_step(self, temp_id_map: &TempIdMap) -> Generation {
+        let mut next = Generation::default();
+
+        for term in self.upserts_e {
+            match term {
+                Term::AddOrRetract(op, std::result::Result::Err(t), a, v) => {
+                    match temp_id_map.get(&*t) {
+                        Some(&n) => next.upserted.push(Term::AddOrRetract(op, std::result::Result::Ok(n), a, v)),
+                        None => next.allocations_e.push(Term::AddOrRetract(op, std::result::Result::Err(t), a, v)),
+                    }
+                },
+                _ => panic!("At the disco"),
+            }
+        }
+
+        for term in self.upserts_ev {
+            match term {
+                Term::AddOrRetract(op, std::result::Result::Err(t1), a, std::result::Result::Err(t2)) => {
+                    match (temp_id_map.get(&*t1), temp_id_map.get(&*t2)) {
+                        (Some(&n1), Some(&n2)) => next.resolved.push(Term::AddOrRetract(op, std::result::Result::Ok(n1), a, std::result::Result::Ok(Value::Integer(n2)))),
+                        (None, Some(&n2)) => next.upserts_e.push(Term::AddOrRetract(op, std::result::Result::Err(t1), a, std::result::Result::Ok(Value::Integer(n2)))),
+                        (Some(&n1), None) => next.allocations_v.push(Term::AddOrRetract(op, std::result::Result::Ok(n1), a, std::result::Result::Err(t2))),
+                        (None, None) => next.allocations_ev.push(Term::AddOrRetract(op, std::result::Result::Err(t1), a, std::result::Result::Err(t2))),
+                    }
+                },
+                _ => panic!("At the disco"),
+            }
+        }
+
+        // TODO: handle all allocations uniformly? // .into_iter().chain(self.allocations_e.into_iter()).chain(self.allocations_v.into_iter()) {
+        for term in self.allocations_ev {
+            match term {
+                Term::AddOrRetract(op, std::result::Result::Err(t1), a, std::result::Result::Err(t2)) => {
+                    match (temp_id_map.get(&*t1), temp_id_map.get(&*t2)) {
+                        (Some(&n1), Some(&n2)) => next.resolved.push(Term::AddOrRetract(op, std::result::Result::Ok(n1), a, std::result::Result::Ok(Value::Integer(n2)))),
+                        (None, Some(&n2)) => next.allocations_e.push(Term::AddOrRetract(op, std::result::Result::Err(t1), a, std::result::Result::Ok(Value::Integer(n2)))),
+                        (Some(&n1), None) => next.allocations_v.push(Term::AddOrRetract(op, std::result::Result::Ok(n1), a, std::result::Result::Err(t2))),
+                        (None, None) => next.allocations_ev.push(Term::AddOrRetract(op, std::result::Result::Err(t1), a, std::result::Result::Err(t2))),
+                    }
+                },
+                _ => panic!("At the disco"),
+            }
+        }
+
+        // TODO: same as upserts_e!
+        for term in self.allocations_e {
+            match term {
+                Term::AddOrRetract(op, std::result::Result::Err(t), a, v) => {
+                    match temp_id_map.get(&*t) {
+                        Some(&n) => next.resolved.push(Term::AddOrRetract(op, std::result::Result::Ok(n), a, v)),
+                        None => next.allocations_e.push(Term::AddOrRetract(op, std::result::Result::Err(t), a, v)),
+                    }
+                },
+                _ => panic!("At the disco"),
+            }
+        }
+
+        for term in self.allocations_v {
+            match term {
+                Term::AddOrRetract(op, e, a, std::result::Result::Err(t)) => {
+                    match temp_id_map.get(&*t) {
+                        Some(&n) => next.resolved.push(Term::AddOrRetract(op, e, a, std::result::Result::Ok(Value::Integer(n)))),
+                        None => next.allocations_v.push(Term::AddOrRetract(op, e, a, std::result::Result::Err(t))),
+                    }
+                },
+                _ => panic!("At the disco"),
+            }
+        }
+
+        next.inert = self.inert;
+
+        next
+
+        // AddOrRetract(OpType, E, Entid, V),
+        // RetractAttribute(E, Entid),
+        // RetractEntity(E)
+    }
+
+    // TODO: assert invariants all around the joint.
+
+    /// Return type is Box<> since `impl Trait` is not yet stable.
+    fn temp_ids_iter<'a>(&'a self) -> Box<Iterator<Item=TempId> + 'a> {
+        let i1 = self.upserts_e.iter().chain(self.allocations_e.iter()).map(|term| {
+            match term {
+                &Term::AddOrRetract(_, std::result::Result::Err(ref t), _, _) => t.clone(),
+                _ => panic!("At the disco"),
+            }
+        });
+
+        let i2 = self.upserts_ev.iter().chain(self.allocations_ev.iter()).flat_map(|term| {
+            match term {
+                &Term::AddOrRetract(_, std::result::Result::Err(ref t1), _, std::result::Result::Err(ref t2)) => {
+                    once(t1.clone()).chain(once(t2.clone()))
+                },
+                _ => panic!("At the disco"),
+            }
+        });
+
+        let i3 = self.allocations_v.iter().map(|term| {
+            match term {
+                &Term::AddOrRetract(_, _, _, std::result::Result::Err(ref t)) => t.clone(),
+                _ => panic!("At the disco"),
+            }
+        });
+
+        Box::new(i1.chain(i2).chain(i3))
+    }
+
+    fn into_allocated_iter<'a>(self, temp_id_map: TempIdMap) -> Box<Iterator<Item=TermWithoutTempIds> + 'a> {
+        assert!(self.upserts_e.is_empty());
+        assert!(self.upserts_ev.is_empty());
+
+        let i1 = self.allocations_ev.into_iter()
+            .chain(self.allocations_e.into_iter())
+            .chain(self.allocations_v.into_iter())
+            .map(move |term| {
+                match term {
+                    Term::AddOrRetract(op, std::result::Result::Err(t1), a, std::result::Result::Err(t2)) => {
+                        // TODO: consider require on temp_id_map.
+                        match (temp_id_map.get(&*t1), temp_id_map.get(&*t2)) {
+                            (Some(&n1), Some(&n2)) => Term::AddOrRetract(op, n1, a, Value::Integer(n2)),
+                            _ => panic!("At the disco"),
+                        }
+                    },
+                    Term::AddOrRetract(op, std::result::Result::Err(t), a, std::result::Result::Ok(v)) => {
+                        match temp_id_map.get(&*t) {
+                            Some(&n) => (Term::AddOrRetract(op, n, a, v)),
+                            _ => panic!("At the disco"),
+                        }
+                    },
+                    Term::AddOrRetract(op, std::result::Result::Ok(e), a, std::result::Result::Err(t)) => {
+                        match temp_id_map.get(&*t) {
+                            Some(&n) => Term::AddOrRetract(op, e, a, Value::Integer(n)),
+                            _ => panic!("At the disco"),
+                        }
+                    },
+                    _ => panic!("At the disco"),
+                }
+            });
+
+        // These have no temp IDs by definition, and just need to be lowered.
+        let i2 = self.resolved.into_iter()
+            .chain(self.inert.into_iter())
+            .map(|term| {
+                match term {
+                    Term::AddOrRetract(op, std::result::Result::Ok(n), a, std::result::Result::Ok(v)) => {
+                        Term::AddOrRetract(op, n, a, v)
+                    },
+                    _ => panic!("At the disco"),
+                }
+            });
+
+        Box::new(i1.chain(i2))
+    }
+}
+
+type TempIdMap = HashMap<TempId, Entid>;
 
 impl DB {
     /// Do schema-aware typechecking and coercion.
@@ -791,15 +1097,16 @@ impl DB {
     }
 
     /// Allocate `n` fresh entids in the given `partition`.
-    fn allocate_entids(&mut self, partition: String, n: i64) -> Range<i64> {
+    fn allocate_entids(&mut self, partition: String, n: usize) -> Range<i64> {
+        // assert!(n > 0, "Must allocate at least one entid.");
         match self.partition_map.get_mut(&partition) {
             Some(mut partition) => {
                 let idx = partition.index;
-                partition.index += n;
+                partition.index += n as i64;
                 idx..partition.index
             },
             // This is a programming error.
-            None => panic!("Cannot allocate entid from unknown partition: {}", partition),
+            None => panic!("Cannot allocate {} entid(s) from unknown partition: {}", n, partition),
         }
     }
 
@@ -808,7 +1115,7 @@ impl DB {
     ///
     /// This approach is explained in https://github.com/mozilla/mentat/wiki/Transacting.
     // TODO: move this to the transactor layer.
-    pub fn transact(&mut self, conn: &rusqlite::Connection, entities: &[Entity]) -> Result<TxReport> {
+    pub fn transact<I>(&mut self, conn: &rusqlite::Connection, entities: I) -> Result<TxReport> where I: IntoIterator<Item=Entity> {
         let tx_instant = now(); // Label the transaction with the timestamp when we first see it: leading edge.
         let tx = self.allocate_entid(":db.part/tx".to_string());
 
@@ -822,7 +1129,7 @@ impl DB {
     ///
     /// This approach is explained in https://github.com/mozilla/mentat/wiki/Transacting.
     // TODO: move this to the transactor layer.
-    pub fn transact_internal(&mut self, conn: &rusqlite::Connection, entities: &[Entity], tx: Entid, tx_instant: i64) -> Result<TxReport> {
+    pub fn transact_internal<I>(&mut self, conn: &rusqlite::Connection, entities: I, tx: Entid, tx_instant: i64) -> Result<TxReport> where I: IntoIterator<Item=Entity> {
         // TODO: push these into an internal transaction report?
 
         /// Assertions that are :db.cardinality/one and not :db.fulltext.
@@ -838,91 +1145,311 @@ impl DB {
                           TypedValue::Long(tx_instant),
                           true));
 
-        let mut temp_ids = BTreeMap::default();
-        temp_ids.insert(self.allocate_temp_id(":db.part/tx"), tx);
+        // We're not resolving these temp_ids correctly; see the upsert code below for more details.
+        let mut temp_ids = intern_set::InternSet::new();
+        temp_ids.intern(":db.part/tx".to_string());
+
+        // We don't yet support lookup refs, so this isn't mutable.  Later, it'll be mutable.
+        let lookup_refs: intern_set::InternSet<AVPair> = intern_set::InternSet::new();
+
 
         // Right now, this could be a for loop, saving some mapping, collecting, and type
         // annotations.  However, I expect it to be a multi-stage map as we start to transform the
         // underlying entities, in which case this expression is more natural than for loops.
-        let r: Vec<Result<()>> = entities.into_iter().map(|entity: &Entity| -> Result<()> {
-            match *entity {
-                Entity::AddOrRetract {
-                    op: OpType::Add,
-                    e: entmod::EntidOrLookupRef::Entid(ref e_),
-                    a: ref a_,
-                    v: ref v_ } => {
+        let terms: Vec<Result<Term<EntidOr<LookupRefOrTempId>, ValueOr<LookupRefOrTempId>>>> = entities.into_iter()
+            .map(|entity: Entity| -> Result<Term<EntidOr<LookupRefOrTempId>, ValueOr<LookupRefOrTempId>>> {
+            match entity {
+                // Entity::Map {
+                //     map: map,
+                // } => {
+                //     // Keys (attributes) are entids or lookup refs; if they are repeated upon mapping to entids,
+                //     // that's an error.
 
-                    let e: i64 = match e_ {
-                        &entmod::Entid::Entid(ref e__) => *e__,
-                        &entmod::Entid::Ident(ref e__) => *self.schema.require_entid(&e__.to_string())?,
-                    };
+                //     // The :db/id key can be missing, in which case the corresponding value is a new TempID.
+
+                //     let map = map.into_iter().map(|(k, v)| {
+                //         let e: i64 = match k {
+                //             entmod::Entid::Entid(ref e__) => *e__,
+                //             entmod::Entid::Ident(ref e__) => *self.schema.require_entid(&e__.to_string())?,
+                //         };
+                //         Ok((e, v))
+                //     }).collect::<Result<BTreeMap<Entid, Value>>>()?;
+                //     Ok(())
+                // },
+
+                Entity::AddOrRetract {
+                    op: op_,
+                    e: e_, // entmod::EntidOrLookupRefOrTempId::Entid(ref e_),
+                    a: a_,
+                    v: v_ } => {
 
                     let a: i64 = match a_ {
-                        &entmod::Entid::Entid(ref a__) => *a__,
-                        &entmod::Entid::Ident(ref a__) => *self.schema.require_entid(&a__.to_string())?,
+                        entmod::Entid::Entid(ref a__) => *a__,
+                        entmod::Entid::Ident(ref a__) => *self.schema.require_entid(&a__.to_string())?,
                     };
 
                     let attribute: &Attribute = self.schema.require_attribute_for_entid(&a)?;
-                    if attribute.fulltext {
-                        bail!(ErrorKind::NotYetImplemented(format!("Transacting :db/fulltext entities is not yet implemented: {:?}", entity)))
-                    }
 
-                    // This is our chance to do schema-aware typechecking: to either assert that the
-                    // given value is in the attribute's value set, or (in limited cases) to coerce
-                    // the value into the attribute's value set.
-                    let typed_value: TypedValue = self.to_typed_value(v_, &attribute)?;
+                    let e = match e_ {
+                        entmod::EntidOrLookupRefOrTempId::Entid(e__) => {
+                            let e: i64 = match e__ {
+                                entmod::Entid::Entid(ref e__) => *e__,
+                                entmod::Entid::Ident(ref e__) => *self.schema.require_entid(&e__.to_string())?,
+                            };
+                            std::result::Result::Ok(e) // TODO: make this more pleasant?
+                        },
 
-                    let added = true;
-                    if attribute.multival {
-                        non_fts_many.push((e, a, typed_value, added));
-                    } else {
-                        non_fts_one.push((e, a, typed_value, added));
-                    }
-                    Ok(())
-                },
+                        entmod::EntidOrLookupRefOrTempId::TempId(e__) => {
+                            std::result::Result::Err(LookupRefOrTempId::TempId(temp_ids.intern(e__)))
+                        },
 
-                Entity::AddOrRetract {
-                    op: OpType::Retract,
-                    e: entmod::EntidOrLookupRefOrTempId::Entid(ref e_),
-                    a: ref a_,
-                    v: ref v_ } => {
-
-                    let e: i64 = match e_ {
-                        &entmod::Entid::Entid(ref e__) => *e__,
-                        &entmod::Entid::Ident(ref e__) => *self.schema.require_entid(&e__.to_string())?,
+                        x @ entmod::EntidOrLookupRefOrTempId::LookupRef(_) => {
+                            bail!(ErrorKind::NotYetImplemented(format!("Transacting lookup-refs is not yet implemented: {:?}", x)))
+                        },
                     };
 
-                    let a: i64 = match a_ {
-                        &entmod::Entid::Entid(ref a__) => *a__,
-                        &entmod::Entid::Ident(ref a__) => *self.schema.require_entid(&a__.to_string())?,
+                    let v = {
+                        if attribute.value_type == ValueType::Ref && v_.is_text() {
+                            std::result::Result::Err(LookupRefOrTempId::TempId(temp_ids.intern(v_.into_text().unwrap())))
+                        } else if attribute.value_type == ValueType::Ref && v_.is_vector() && v_.as_vector().unwrap().len() == 2 {
+                            bail!(ErrorKind::NotYetImplemented(format!("Transacting lookup-refs is not yet implemented: {:?}", 1))) // entity)))
+                            // let elements = v_.as_vector();
+                            // // Need to type-check. In [a v], a should be an entid and v should be whatever a expects.
+                            // let lr_a_value = elements[0].unwrap();
+                            // let lr_v_value = elements[1].unwrap();
+                            // if let Some(lr_a) = lr_a_value.as_integer() {
+
+                            // } else {
+                            //     bail!(ErrorKind::NotYetImplemented(format!("Transacting :db/fulltext entities is not yet implemented: {:?}", entity)))
+                            // }
+                            // self.to_typed_value(elements[0].unwrap(),
+
+                            // let av = AVPair(elements.
+                            // ValueOr::Other(EntidOrLookupRefOrTempId::LookupRef(lookup_refs.insert()))
+                            // // if attribute.value_type == ValueType::Ref && v_.is_text() {
+                        } else {
+                            std::result::Result::Ok(v_)
+                        }
                     };
 
-                    let attribute: &Attribute = self.schema.require_attribute_for_entid(&a)?;
-                    if attribute.fulltext {
-                        bail!(ErrorKind::NotYetImplemented(format!("Transacting :db/fulltext entities is not yet implemented: {:?}", entity)))
-                    }
+                    Ok(Term::AddOrRetract(op_, e, a, v))
 
-                    // This is our chance to do schema-aware typechecking: to either assert that the
-                    // given value is in the attribute's value set, or (in limited cases) to coerce
-                    // the value into the attribute's value set.
-                    let typed_value: TypedValue = self.to_typed_value(v_, &attribute)?;
+                    // let attribute: &Attribute = self.schema.require_attribute_for_entid(&a)?;
+                    // if attribute.fulltext {
+                    //     bail!(ErrorKind::NotYetImplemented(format!("Transacting :db/fulltext entities is not yet implemented: {:?}", entity)))
+                    // }
 
-                    let added = false;
+                    // // This is our chance to do schema-aware typechecking: to either assert that the
+                    // // given value is in the attribute's value set, or (in limited cases) to coerce
+                    // // the value into the attribute's value set.
+                    // let typed_value: TypedValue = self.to_typed_value(v_, &attribute)?;
 
-                    if attribute.multival {
-                        non_fts_many.push((e, a, typed_value, added));
-                    } else {
-                        non_fts_one.push((e, a, typed_value, added));
-                    }
-                    Ok(())
+                    // let added = true;
+                    // if attribute.multival {
+                    //     non_fts_many.push((e, a, typed_value, added));
+                    // } else {
+                    //     non_fts_one.push((e, a, typed_value, added));
+                    // }
+                    // Ok(())
                 },
+
+                // Entity::Retract {
+                //     e: entmod::EntidOrLookupRefOrTempId::Entid(ref e_),
+                //     a: ref a_,
+                //     v: ref v_ } => {
+
+                //     let e: i64 = match e_ {
+                //         &entmod::Entid::Entid(ref e__) => *e__,
+                //         &entmod::Entid::Ident(ref e__) => *self.schema.require_entid(&e__.to_string())?,
+                //     };
+
+                //     let a: i64 = match a_ {
+                //         &entmod::Entid::Entid(ref a__) => *a__,
+                //         &entmod::Entid::Ident(ref a__) => *self.schema.require_entid(&a__.to_string())?,
+                //     };
+
+                //     let attribute: &Attribute = self.schema.require_attribute_for_entid(&a)?;
+                //     if attribute.fulltext {
+                //         bail!(ErrorKind::NotYetImplemented(format!("Transacting :db/fulltext entities is not yet implemented: {:?}", entity)))
+                //     }
+
+                //     // This is our chance to do schema-aware typechecking: to either assert that the
+                //     // given value is in the attribute's value set, or (in limited cases) to coerce
+                //     // the value into the attribute's value set.
+                //     let typed_value: TypedValue = self.to_typed_value(v_, &attribute)?;
+
+                //     let added = false;
+
+                //     if attribute.multival {
+                //         non_fts_many.push((e, a, typed_value, added));
+                //     } else {
+                //         non_fts_one.push((e, a, typed_value, added));
+                //     }
+                //     Ok(())
+                // },
 
                 _ => bail!(ErrorKind::NotYetImplemented(format!("Transacting this entity is not yet implemented: {:?}", entity)))
             }
-        }).collect();
+        })
+    //         .map(|term: Result<Term<LookupRefOrTempId>>| -> Result<Term<Rc<String>>> {
+    //             term.and_then(|term| {
+    //                 // () // Ok(())
+    //                 match term {
+    // // AddOrRetract(OpType, T, Entid, ValueOr<T>),
+    // // RetractAttribute(T, Entid),
+    // // RetractEntity(T)
+    //                     Term::AddOrRetract(op, e, a, v) => {
+    //                         // TODO: map_other.  Or just use Result<T, >.
+    //                         let e_ = match e {
+    //                             EntidOr::Other(LookupRefOrTempId::LookupRef(_)) => {
+    //                                 bail!(ErrorKind::NotYetImplemented(format!("Transacting lookup-refs is not yet implemented: {:?}", term)))
+    //                             },
+    //                             EntidOr::Other(LookupRefOrTempId::TempId(e_)) => EntidOr::Other(e_),
+    //                             EntidOr::EntidLeft(e_) => EntidOr::EntidLeft(e_),
+    //                         };
 
-        let r: Result<Vec<()>> = r.into_iter().collect();
-        r?;
+    //                         let v_ = match v {
+    //                             ValueOr::Other(LookupRefOrTempId::LookupRef(_)) => {
+    //                                 bail!(ErrorKind::NotYetImplemented(format!("Transacting lookup-refs is not yet implemented: {:?}", term)))
+    //                             },
+    //                             ValueOr::Other(LookupRefOrTempId::TempId(e_)) => ValueOr::Other(e_),
+    //                             ValueOr::ValueLeft(e_) => ValueOr::ValueLeft(e_),
+    //                         };
+
+    //                         Ok(Term::AddOrRetract(op, e_, a, v_))
+    //                     },
+
+    //                     _ => bail!(ErrorKind::NotYetImplemented(format!("Transacting this entity is not yet implemented: {:?}", term)))
+    //                 }
+    //             })
+    //             // Ok(())
+    //         })
+            .collect();
+
+        let terms: Result<Vec<Term<EntidOr<LookupRefOrTempId>, ValueOr<LookupRefOrTempId>>>> = terms.into_iter().collect();
+        let terms = terms?;
+
+        let avs: Vec<&(i64, TypedValue)> = lookup_refs.inner.iter().map(|rc| &**rc).collect();
+        // your_vec.iter().map(|r: &Rc<T>| -> &T { &**r }).collect()
+
+        let lookup_map: AVMap = self.resolve_avs(conn, &avs[..])?;
+
+        fn replace_lookup_ref<T, U>(lookup_map: &AVMap, desired_or: std::result::Result<T, LookupRefOrTempId>, lift: U) -> Result<std::result::Result<T, TempId>> where U: FnOnce(Entid) -> T {
+            // TODO: explain this?  Make this more clear?
+            match desired_or {
+                std::result::Result::Ok(desired) => Ok(std::result::Result::Ok(desired)), // N.b., must unwrap here -- the ::Ok types are different!
+                std::result::Result::Err(other) => {
+                    match other {
+                        LookupRefOrTempId::TempId(t) => Ok(std::result::Result::Err(t)),
+                        LookupRefOrTempId::LookupRef(av) => lookup_map.get(&*av).map(|x| lift(*x)).map(std::result::Result::Ok).ok_or_else(|| ErrorKind::UnrecognizedIdent(format!("couldn't lookup [a v]: {:?}", (*av).clone())).into()),
+                    }
+                }
+            }
+        };
+
+        let terms: Result<Vec<Term<EntidOr<TempId>, ValueOr<TempId>>>> = terms.into_iter().map(|term: Term<EntidOr<LookupRefOrTempId>, ValueOr<LookupRefOrTempId>>| -> Result<Term<EntidOr<TempId>, ValueOr<TempId>>> {
+            match term {
+                Term::AddOrRetract(op, e, a, v) => {
+                    // let x: EntidOr<LookupRefOrTempId> = e;
+                    // let y: EntidOr<TempId> = replace_lookup_ref(&lookup_map, e)?;
+                    Ok(Term::AddOrRetract(op, replace_lookup_ref(&lookup_map, e, |x| x)?, a, replace_lookup_ref(&lookup_map, v, |x| Value::Integer(x))?))
+                },
+                _ => bail!(ErrorKind::NotYetImplemented(format!("Transacting this entity is not yet implemented: {:?}", 1))) // XXX
+            }
+        }).collect();
+        let terms = terms?;
+
+        // Now we can collect upsert populations.
+        let mut generation = Generation::from(terms, self)?;
+
+        // And evolve them forward.
+        while generation.can_evolve() {
+            println!("Evolving generation: starting with {:?}", generation);
+
+            // Collect id->[a v] pairs.
+            let mut temp_id_avs: Vec<(TempId, AVPair)> = vec![];
+            for term in &generation.upserts_e {
+                match term {
+                    &Term::AddOrRetract(_, std::result::Result::Err(ref t), ref a, std::result::Result::Ok(ref v)) => {
+
+                        // TODO: figure out how to make this less expensive.  Just do it earlier, and have TypedValueOr instead of ValueOr?
+                        let attribute: &Attribute = self.schema.require_attribute_for_entid(a)?;
+                        let typed_value: TypedValue = self.to_typed_value(v, &attribute)?;
+
+                        temp_id_avs.push((t.clone(), (*a, typed_value)));
+                    },
+                    _ => panic!("At the disco"),
+                }
+            }
+
+            println!("Evolving generation: resolving AV pairs: {:?}", temp_id_avs);
+
+            // Map [a v]->entid.
+            let mut av_pairs: Vec<&AVPair> = vec![]; // (&temp_id_avs).into_iter().map(|x: &(TempId, AVPair)| -> &AVPair { &x.1 }).collect();
+            for i in 0..temp_id_avs.len() {
+                av_pairs.push(&temp_id_avs[i].1);
+            }
+
+            // Lookup in the store.
+            let av_map: AVMap = self.resolve_avs(conn, &av_pairs[..])?;
+
+            println!("Evolving generation: resolved AV map: {:?}", av_map);
+
+            // Map id->entid.
+            let mut temp_id_map: TempIdMap = TempIdMap::default();
+            for &(ref temp_id, ref av_pair) in &temp_id_avs {
+                if let Some(n) = av_map.get(&av_pair) {
+                    if let Some(previous_n) = temp_id_map.get(&*temp_id) {
+                        if n != previous_n {
+                            // Conflicting upsert!  TODO: collect conflicts and give more details on what failed this transaction.
+                            bail!(ErrorKind::NotYetImplemented(format!("Conflicting upsert: temp ID '{}' resolves to more than one entid: {:?}, {:?}", temp_id, previous_n, n))) // XXX
+                        }
+                    }
+                    temp_id_map.insert(temp_id.clone(), *n);
+                }
+            }
+
+            // Evolve further.
+            generation = generation.evolve_one_step(&temp_id_map);
+        }
+
+        println!("Finished evolving; final generation: {:?}", generation);
+
+        // Allocate entids for temp IDs that didn't upsert.  BTreeSet rather than HashSet so this is deterministic.
+        // TODO: assert invariant: upserts_{e,ev} are both empty.
+        let unresolved_temp_ids: BTreeSet<TempId> = generation.temp_ids_iter().collect();
+        // TODO: track partitions for temporary IDs.
+        let entids = self.allocate_entids(":db.part/user".to_string(), unresolved_temp_ids.len());
+
+        let temp_id_allocations: TempIdMap = unresolved_temp_ids.into_iter().zip(entids).collect();
+
+        let final_terms: Vec<Term<Entid, Value>> = generation.into_allocated_iter(temp_id_allocations).collect();
+
+        // Collect into non_fts_*.
+        // TODO: use something like Clojure's group_by to do this.
+        for term in &final_terms {
+            match term {
+                &Term::AddOrRetract(ref op, ref e, ref a, ref v) => {
+                    let attribute: &Attribute = self.schema.require_attribute_for_entid(a)?;
+                    if attribute.fulltext {
+                        bail!(ErrorKind::NotYetImplemented(format!("Transacting :db/fulltext entities is not yet implemented: {:?}", term)))
+                    }
+
+                    // This is our chance to do schema-aware typechecking: to either assert that the
+                    // given value is in the attribute's value set, or (in limited cases) to coerce
+                    // the value into the attribute's value set.
+                    let typed_value: TypedValue = self.to_typed_value(v, &attribute)?;
+
+                    let added = *op == OpType::Add;
+                    if attribute.multival {
+                        non_fts_many.push((*e, *a, typed_value, added));
+                    } else {
+                        non_fts_one.push((*e, *a, typed_value, added));
+                    }
+                },
+                _ => bail!(ErrorKind::NotYetImplemented(format!("Transacting this term is not yet implemented: {:?}", term))) // TODO: reference original input.  Difficult!
+            }
+        }
 
         self.create_temp_tables(conn)?;
 
@@ -945,7 +1472,7 @@ impl DB {
         Ok(TxReport {
             tx: tx,
             tx_instant: tx_instant,
-            temp_ids: temp_ids,
+            // temp_ids: BTreeMap::default(), // temp_ids,
         })
     }
 }
