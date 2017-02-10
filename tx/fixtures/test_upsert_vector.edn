@@ -77,8 +77,8 @@
   #{[?tx6 :db/txInstant ?ms6 ?tx6 true]}
   :test/expectederrormessage
   ""
-  ;; nil
-  }
+  :test/expectedtempids
+  {}}
 
  {:test/label "tempids in :db/retract that don't upsert fail"
   :test/assertions
@@ -86,7 +86,36 @@
   :test/expectedtransaction
   nil
   :test/expectederrormessage
+  ""}
+
+ ;; The upsert algorithm will first try to resolve "t1", fail, and then allocate both "t1" and "t2".
+ {:test/label "multistep, both allocated"
+  :test/assertions
+  [[:db/add "t1" :db/ident :name/Josef]
+   [:db/add "t2" :db.schema/attribute "t1"]]
+  :test/expectedtransaction
+  #{[65538 :db/ident :name/Josef ?tx8 true]
+    [65539 :db.schema/attribute 65538 ?tx8 true]
+    [?tx8 :db/txInstant ?ms8 ?tx8 true]}
+  :test/expectederrormessage
   ""
-  ;; nil
-  }
+  :test/expectedtempids
+  {"t1" 65538
+   "t2" 65539}}
+
+ ;; Can't quite test this without more schema elements.
+ ;; ;; This time, we can resolve both, but we have to try "t1", succeed, and then resolve "t2".
+ ;; {:test/label "multistep, upserted allocated"
+ ;;  :test/assertions
+ ;;  [[:db/add "t1" :db/ident :name/Josef]
+ ;;   [:db/add "t2" :db/ident "t1"]]
+ ;;  :test/expectedtransaction
+ ;;  #{[65538 :db/ident :name/Josef]
+ ;;    [65538 :db/ident :name/Karl]
+ ;;    [?tx8 :db/txInstant ?ms8 ?tx8 true]}
+ ;;  :test/expectederrormessage
+ ;;  ""
+ ;;  :test/expectedtempids
+ ;;  {"t1" 65538
+ ;;   "t2" 65539}}
  ]
