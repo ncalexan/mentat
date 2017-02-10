@@ -64,6 +64,28 @@
   :test/expectedtransaction
   nil
   :test/expectederrormessage
+  "Conflicting upsert"
+  ;; nil
+  }
+
+ {:test/label "tempids in :db/retract that do upsert are fine"
+  :test/assertions
+  [[:db/add "t1" :db/ident :name/Ivan]
+   ;; This ref doesn't exist, so the assertion will be ignored.
+   [:db/retract "t1" :db.schema/attribute 103]]
+  :test/expectedtransaction
+  #{[?tx6 :db/txInstant ?ms6 ?tx6 true]}
+  :test/expectederrormessage
+  ""
+  ;; nil
+  }
+
+ {:test/label "tempids in :db/retract that don't upsert fail"
+  :test/assertions
+  [[:db/retract "t1" :db/ident :name/Anonymous]]
+  :test/expectedtransaction
+  nil
+  :test/expectederrormessage
   ""
   ;; nil
   }

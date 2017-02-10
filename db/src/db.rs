@@ -1167,7 +1167,7 @@ impl DB {
 
         let temp_id_allocations: TempIdMap = unresolved_temp_ids.into_iter().zip(entids).collect();
 
-        let final_populations = generation.into_final_populations(&temp_id_allocations);
+        let final_populations = generation.into_final_populations(&temp_id_allocations)?;
         let final_terms: Vec<TermWithoutTempIds> = [final_populations.resolved,
                                                     final_populations.allocated,
                                                     inert.into_iter().map(|term| term.unwrap()).collect()].concat();

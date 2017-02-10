@@ -17,6 +17,7 @@ use std::collections::BTreeSet;
 
 use mentat_tx::entities::OpType;
 use errors;
+use errors::ErrorKind;
 use types::{Attribute, AVPair, DB, Entid, TypedValue};
 use internal_types::*;
 
@@ -141,6 +142,8 @@ impl Generation {
             }
         }
 
+        // There's no particular need to separate resolved from allocations right here and right
+        // now, although it is convenient.
         for term in self.allocations {
             // TODO: find an expression that destructures less?  I still expect this to be efficient
             // but it's a little verbose.
@@ -207,7 +210,8 @@ impl Generation {
                 },
                 &Term::AddOrRetract(OpType::Add, Ok(_), _, Ok(_)) => unreachable!(),
                 &Term::AddOrRetract(OpType::Retract, _, _, _) => {
-                    // [:db/retract ...] never allocate entids.
+                    // [:db/retract ...] entities never allocate entids; they have to resolve due to
+                    // other upserts (or they fail the transaction).
                 },
             }
         }
@@ -217,7 +221,7 @@ impl Generation {
 
     /// After evolution is complete, use the provided allocated entids to segment `self` into
     /// populations, each with no references to tempids.
-    pub fn into_final_populations(self, temp_id_map: &TempIdMap) -> FinalPopulations {
+    pub fn into_final_populations(self, temp_id_map: &TempIdMap) -> errors::Result<FinalPopulations> {
         assert!(self.upserts_e.is_empty());
         assert!(self.upserts_ev.is_empty());
 
@@ -229,31 +233,32 @@ impl Generation {
         for term in self.allocations {
             let allocated = match term {
                 // TODO: consider require implementing require on temp_id_map.
-                // TODO: handle incorrect [:db/retract "t1" ...] entities, where "t1" does not
-                // upsert elsewhere.
                 Term::AddOrRetract(op, Err(t1), a, Err(t2)) => {
-                    match (temp_id_map.get(&*t1), temp_id_map.get(&*t2)) {
-                        (Some(&n1), Some(&n2)) => Term::AddOrRetract(op, n1, a, TypedValue::Ref(n2)),
-                        _ => unreachable!(),
+                    match (op, temp_id_map.get(&*t1), temp_id_map.get(&*t2)) {
+                        (op, Some(&n1), Some(&n2)) => Term::AddOrRetract(op, n1, a, TypedValue::Ref(n2)),
+                        (OpType::Add, _, _) => unreachable!(), // This is a coding error -- every tempid in a :db/add entity should resolve or be allocated.
+                        (OpType::Retract, _, _) => bail!(ErrorKind::NotYetImplemented(format!("[:db/retract ...] entity referenced temp ID that did not upsert: one of {}, {}", t1, t2))),
                     }
                 },
                 Term::AddOrRetract(op, Err(t), a, Ok(v)) => {
-                    match temp_id_map.get(&*t) {
-                        Some(&n) => Term::AddOrRetract(op, n, a, v),
-                        _ => unreachable!(),
+                    match (op, temp_id_map.get(&*t)) {
+                        (op, Some(&n)) => Term::AddOrRetract(op, n, a, v),
+                        (OpType::Add, _) => unreachable!(), // This is a coding error.
+                        (OpType::Retract, _) => bail!(ErrorKind::NotYetImplemented(format!("[:db/retract ...] entity referenced temp ID that did not upsert: {}", t))),
                     }
                 },
                 Term::AddOrRetract(op, Ok(e), a, Err(t)) => {
-                    match temp_id_map.get(&*t) {
-                        Some(&n) => Term::AddOrRetract(op, e, a, TypedValue::Ref(n)),
-                        _ => unreachable!(),
+                    match (op, temp_id_map.get(&*t)) {
+                        (op, Some(&n)) => Term::AddOrRetract(op, e, a, TypedValue::Ref(n)),
+                        (OpType::Add, _) => unreachable!(), // This is a coding error.
+                        (OpType::Retract, _) => bail!(ErrorKind::NotYetImplemented(format!("[:db/retract ...] entity referenced temp ID that did not upsert: {}", t))),
                     }
                 },
-                Term::AddOrRetract(_, Ok(_), _, Ok(_)) => unreachable!(),
+                Term::AddOrRetract(_, Ok(_), _, Ok(_)) => unreachable!(), // This is a coding error -- these should not be in allocations.
             };
             populations.allocated.push(allocated);
         }
 
-        populations
+        Ok(populations)
     }
 }
