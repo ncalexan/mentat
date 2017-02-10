@@ -10,7 +10,7 @@
 
 #![allow(dead_code)]
 
-//! XXX
+//! Types used only within the transactor.  These should not be exposed outside of this crate.
 
 use std;
 use std::collections::HashMap;
@@ -24,8 +24,6 @@ use mentat_tx::entities::OpType;
 #[derive(Clone,Debug,Eq,Hash,Ord,PartialOrd,PartialEq)]
 pub enum Term<E, V> {
     AddOrRetract(OpType, E, Entid, V),
-    // RetractAttribute(E, Entid),
-    // RetractEntity(E)
 }
 
 pub type EntidOr<T> = std::result::Result<Entid, T>;
@@ -71,14 +69,15 @@ impl TermWithTempIds {
 /// The reason for this awkward expression is that we're parameterizing over the _type constructor_
 /// (`EntidOr` or `TypedValueOr`), which is not trivial to express in Rust.  This only works because
 /// they're both the same `Result<...>` type with different parameterizations.
-pub fn replace_lookup_ref<T, U>(lookup_map: &AVMap, desired_or: std::result::Result<T, LookupRefOrTempId>, lift: U) -> errors::Result<std::result::Result<T, TempId>> where U: FnOnce(Entid) -> T {
+pub fn replace_lookup_ref<T, U>(lookup_map: &AVMap, desired_or: Result<T, LookupRefOrTempId>, lift: U) -> errors::Result<Result<T, TempId>> where U: FnOnce(Entid) -> T {
     match desired_or {
-        std::result::Result::Ok(desired) => Ok(std::result::Result::Ok(desired)), // N.b., must unwrap here -- the ::Ok types are different!
-        std::result::Result::Err(other) => {
+        Ok(desired) => Ok(Ok(desired)), // N.b., must unwrap here -- the ::Ok types are different!
+        Err(other) => {
             match other {
-                LookupRefOrTempId::TempId(t) => Ok(std::result::Result::Err(t)),
+                LookupRefOrTempId::TempId(t) => Ok(Err(t)),
                 LookupRefOrTempId::LookupRef(av) => lookup_map.get(&*av)
-                    .map(|x| lift(*x)).map(std::result::Result::Ok)
+                    .map(|x| lift(*x)).map(Ok)
+                    // XXX TODO: fix this error kind!
                     .ok_or_else(|| ErrorKind::UnrecognizedIdent(format!("couldn't lookup [a v]: {:?}", (*av).clone())).into()),
             }
         }
