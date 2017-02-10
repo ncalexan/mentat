@@ -216,7 +216,6 @@ impl TermWithTempIds {
 }
 
 impl Generation {
-
     /// Split entities into a generation of populations that need to evolve to have their temp IDs
     /// resolved or allocated, and a population of inert entities that do not reference temp IDs.
     pub fn from<I>(terms: I, db: &DB) -> errors::Result<(Generation, Population)> where I: IntoIterator<Item=TermWithTempIds> {
@@ -256,10 +255,19 @@ impl Generation {
         Ok((generation, inert))
     }
 
+    /// Return true if it's possible to evolve this generation further.
+    ///
+    /// There can be complex upserts but no simple upserts to help resolve them.  We accept the
+    /// overhead of having the database try to resolve an empty set of simple upserts, to avoid
+    /// having to special case complex upserts at entid allocation time.
     pub fn can_evolve(&self) -> bool {
-        !self.upserts_e.is_empty()
+        !self.upserts_e.is_empty() || !self.upserts_ev.is_empty()
     }
 
+    /// Evolve this generation one step further by rewriting the existing :db/add entities using the
+    /// given temporary IDs.
+    ///
+    /// TODO: Considering doing this in place; the function already consumes `self`.
     pub fn evolve_one_step(self, temp_id_map: &TempIdMap) -> Generation {
         let mut next = Generation::default();
 
@@ -308,10 +316,7 @@ impl Generation {
         next
     }
 
-    // TODO: assert invariants all around the joint.
-
-
-    // Collect id->[a v] pairs.
+    // Collect id->[a v] pairs that might upsert at this evolutionary step.
     pub fn temp_id_avs<'a>(&'a self) -> Vec<(TempId, AVPair)> {
         let mut temp_id_avs: Vec<(TempId, AVPair)> = vec![];
         // TODO: map/collect.
@@ -323,9 +328,11 @@ impl Generation {
         temp_id_avs
     }
 
+    /// After evolution is complete, yield the set of tempids that require entid allocation.  These
+    /// are the tempids that didn't upsert to existing entids.
     pub fn temp_ids_in_allocations(&self) -> BTreeSet<TempId> {
         assert!(self.upserts_e.is_empty(), "All upserts should have been upserted, resolved, or moved to the allocated population!");
-        assert!(self.upserts_e.is_empty(), "All upserts should have been upserted, resolved, or moved to the allocated population!");
+        assert!(self.upserts_ev.is_empty(), "All upserts should have been upserted, resolved, or moved to the allocated population!");
 
         let mut temp_ids: BTreeSet<TempId> = BTreeSet::default();
 
@@ -348,8 +355,8 @@ impl Generation {
         temp_ids
     }
 
-    /// After allocating entids for the given tempids, segment `self` into populations, each with no
-    /// references to tempids.
+    /// After evolution is complete, use the provided allocated entids to segment `self` into
+    /// populations, each with no references to tempids.
     pub fn into_final_populations(self, temp_id_map: &TempIdMap) -> FinalPopulations {
         assert!(self.upserts_e.is_empty());
         assert!(self.upserts_ev.is_empty());

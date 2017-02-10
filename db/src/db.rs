@@ -571,43 +571,38 @@ impl DB {
         Ok(m)
     }
 
-    /// Given a slice of [a v] lookup-refs, look up the corresponding [e a v] triples.
-    ///
-    /// It is assumed that the attribute `a` in each lookup-ref is `:db/unique`, so that at most one
-    /// matching [e a v] triple exists.  (If this is not true, some matching entid `e` will be
-    /// chosen non-deterministically, if one exists.)
-    ///
-    /// Returns a map &(a, v) -> e, to avoid cloning potentially large values.  The keys of the map
-    /// are exactly those (a, v) pairs that have an assertion [e a v] in the datom store.
+    /// TODO: explain what this is doing.
     pub fn resolve_temp_id_avs<'a>(&self, conn: &rusqlite::Connection, temp_id_avs: &'a [(TempId, AVPair)]) -> Result<TempIdMap> {
-            println!("Evolving generation: resolving AV pairs: {:?}", temp_id_avs);
+        if temp_id_avs.is_empty() {
+            return Ok(TempIdMap::default());
+        }
 
-            // Map [a v]->entid.
-            let mut av_pairs: Vec<&AVPair> = vec![]; // (&temp_id_avs).into_iter().map(|x: &(TempId, AVPair)| -> &AVPair { &x.1 }).collect();
-            for i in 0..temp_id_avs.len() {
-                av_pairs.push(&temp_id_avs[i].1);
-            }
+        // Map [a v]->entid.
+        let mut av_pairs: Vec<&AVPair> = vec![];
+        for i in 0..temp_id_avs.len() {
+            av_pairs.push(&temp_id_avs[i].1);
+        }
 
-            // Lookup in the store.
-            let av_map: AVMap = self.resolve_avs(conn, &av_pairs[..])?;
+        // Lookup in the store.
+        let av_map: AVMap = self.resolve_avs(conn, &av_pairs[..])?;
 
-            println!("Evolving generation: resolved AV map: {:?}", av_map);
+        println!("Evolving generation: resolved AV map: {:?}", av_map);
 
-            // Map id->entid.
-            let mut temp_id_map: TempIdMap = TempIdMap::default();
-            for &(ref temp_id, ref av_pair) in temp_id_avs {
-                if let Some(n) = av_map.get(&av_pair) {
-                    if let Some(previous_n) = temp_id_map.get(&*temp_id) {
-                        if n != previous_n {
-                            // Conflicting upsert!  TODO: collect conflicts and give more details on what failed this transaction.
-                            bail!(ErrorKind::NotYetImplemented(format!("Conflicting upsert: temp ID '{}' resolves to more than one entid: {:?}, {:?}", temp_id, previous_n, n))) // XXX
-                        }
+        // Map id->entid.
+        let mut temp_id_map: TempIdMap = TempIdMap::default();
+        for &(ref temp_id, ref av_pair) in temp_id_avs {
+            if let Some(n) = av_map.get(&av_pair) {
+                if let Some(previous_n) = temp_id_map.get(&*temp_id) {
+                    if n != previous_n {
+                        // Conflicting upsert!  TODO: collect conflicts and give more details on what failed this transaction.
+                        bail!(ErrorKind::NotYetImplemented(format!("Conflicting upsert: temp ID '{}' resolves to more than one entid: {:?}, {:?}", temp_id, previous_n, n))) // XXX
                     }
-                    temp_id_map.insert(temp_id.clone(), *n);
                 }
+                temp_id_map.insert(temp_id.clone(), *n);
             }
+        }
 
-        return Ok((temp_id_map));
+        Ok((temp_id_map))
     }
 
     /// Create empty temporary tables for search parameters and search results.

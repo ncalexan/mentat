@@ -46,6 +46,17 @@
   :test/expectedtempids
   {"t1" 100}}
 
+ ;; TODO: don't hard-code allocated entids.
+ {:test/label "single complex upsert allocates new entid"
+  :test/assertions
+  [[:db/add "t1" :db.schema/attribute "t2"]]
+  :test/expectedtransaction
+  #{[65536 :db.schema/attribute 65537 ?tx4 true]
+    [?tx4 :db/txInstant ?ms4 ?tx4 true]}
+  :test/expectedtempids
+  {"t1" 65536
+   "t2" 65537}}
+
  {:test/label "conflicting upserts fail"
   :test/assertions
   [[:db/add "t1" :db/ident :name/Ivan]
