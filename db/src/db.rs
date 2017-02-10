@@ -455,25 +455,6 @@ pub enum SearchType {
 // Take Allocations* and the complement of AddWithTempIds, allocate entids, and TermWithTempIds -> TermWithoutTempIds
 // TermWithoutTempIds -> temporary tables.
 
-/// "Simple upserts" that look like [:db/add TEMPID a v], where a is :db.unique/identity.
-// TODO: TypedValue!
-struct UpsertsE(TempId, Entid, Value);
-
-/// "Complex upserts" that look like [:db/add TEMPID a OTHERID], where a is :db.unique/identity
-struct UpsertsEV(TempId, Entid, TempId);
-
-/// Entities that look like [:db/add TEMPID b OTHERID], where b is not :db.unique/identity.
-struct AllocationsEV(TempId, Entid, TempId);
-
-/// Entities that look like [:db/add TEMPID b v], where b is not :db.unique/identity.
-struct AllocationsE(TempId, Entid, Value);
-
-/// Entities that look like [:db/add e b OTHERID].
-struct AllocationsV(Entid, Entid, TempId);
-
-/// Entities that do not reference tempids.
-struct Inert(Entid, Entid, Value);
-
 impl DB {
     /// Do schema-aware typechecking and coercion.
     ///
