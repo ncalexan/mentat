@@ -16,6 +16,8 @@ use std;
 use std::collections::HashMap;
 use std::rc::Rc;
 
+use errors;
+use errors::ErrorKind;
 use types::*;
 use mentat_tx::entities::OpType;
 
@@ -56,6 +58,29 @@ impl TermWithTempIds {
         match self {
             Term::AddOrRetract(op, Ok(n), a, Ok(v)) => Term::AddOrRetract(op, n, a, v),
             _ => unreachable!(),
+        }
+    }
+}
+
+/// Given an `EntidOr` or a `TypedValueOr`, replace any internal `LookupRef` with the entid from
+/// the given map.  Fail if any `LookupRef` cannot be replaced.
+///
+/// `lift` allows to specify how the entid found is mapped into the output type.  (This could
+/// also be an `Into` or `From` requirement.)
+///
+/// The reason for this awkward expression is that we're parameterizing over the _type constructor_
+/// (`EntidOr` or `TypedValueOr`), which is not trivial to express in Rust.  This only works because
+/// they're both the same `Result<...>` type with different parameterizations.
+pub fn replace_lookup_ref<T, U>(lookup_map: &AVMap, desired_or: std::result::Result<T, LookupRefOrTempId>, lift: U) -> errors::Result<std::result::Result<T, TempId>> where U: FnOnce(Entid) -> T {
+    match desired_or {
+        std::result::Result::Ok(desired) => Ok(std::result::Result::Ok(desired)), // N.b., must unwrap here -- the ::Ok types are different!
+        std::result::Result::Err(other) => {
+            match other {
+                LookupRefOrTempId::TempId(t) => Ok(std::result::Result::Err(t)),
+                LookupRefOrTempId::LookupRef(av) => lookup_map.get(&*av)
+                    .map(|x| lift(*x)).map(std::result::Result::Ok)
+                    .ok_or_else(|| ErrorKind::UnrecognizedIdent(format!("couldn't lookup [a v]: {:?}", (*av).clone())).into()),
+            }
         }
     }
 }

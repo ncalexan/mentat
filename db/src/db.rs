@@ -896,6 +896,82 @@ impl DB {
         }
     }
 
+    /// Pipeline stage 1: convert `Entity` instances into `Term` instances, ready for term
+    /// rewriting.
+    ///
+    /// The `Term` instances produce share interned TempId and LookupRef handles.
+    fn entities_into_terms_with_temp_ids_and_lookup_refs<I>(&self, entities: I) -> Result<Vec<TermWithTempIdsAndLookupRefs>> where I: IntoIterator<Item=Entity> {
+        let mut temp_ids = intern_set::InternSet::new();
+
+        entities.into_iter()
+            .map(|entity: Entity| -> Result<TermWithTempIdsAndLookupRefs> {
+                match entity {
+                    Entity::AddOrRetract { op, e, a, v } => {
+                        let a: i64 = match a {
+                            entmod::Entid::Entid(ref a) => *a,
+                            entmod::Entid::Ident(ref a) => *self.schema.require_entid(&a.to_string())?,
+                        };
+
+                        let attribute: &Attribute = self.schema.require_attribute_for_entid(&a)?;
+
+                        let e = match e {
+                            entmod::EntidOrLookupRefOrTempId::Entid(e) => {
+                                let e: i64 = match e {
+                                    entmod::Entid::Entid(ref e) => *e,
+                                    entmod::Entid::Ident(ref e) => *self.schema.require_entid(&e.to_string())?,
+                                };
+                                std::result::Result::Ok(e)
+                            },
+
+                            entmod::EntidOrLookupRefOrTempId::TempId(e) => {
+                                std::result::Result::Err(LookupRefOrTempId::TempId(temp_ids.intern(e)))
+                            },
+
+                            entmod::EntidOrLookupRefOrTempId::LookupRef(_) => {
+                                // TODO: reference entity and initial input.
+                                bail!(ErrorKind::NotYetImplemented(format!("Transacting lookup-refs is not yet implemented")))
+                            },
+                        };
+
+                        let v = {
+                            if attribute.value_type == ValueType::Ref && v.is_text() {
+                                std::result::Result::Err(LookupRefOrTempId::TempId(temp_ids.intern(v.into_text().unwrap())))
+                            } else if attribute.value_type == ValueType::Ref && v.is_vector() && v.as_vector().unwrap().len() == 2 {
+                                bail!(ErrorKind::NotYetImplemented(format!("Transacting lookup-refs is not yet implemented")))
+                            } else {
+                                // Here is where we do schema-aware typechecking: we either assert that
+                                // the given value is in the attribute's value set, or (in limited
+                                // cases) coerce the value into the attribute's value set.
+                                let typed_value: TypedValue = self.to_typed_value(&v, &attribute)?;
+
+                                std::result::Result::Ok(typed_value)
+                            }
+                        };
+
+                        Ok(Term::AddOrRetract(op, e, a, v))
+                    },
+                    Entity::Map { map: _ } => unimplemented!(),
+                }
+            })
+            .collect::<Result<Vec<_>>>()
+    }
+
+    /// Pipeline stage 2: rewrite `Term` instances with lookup refs into `Term` instances without
+    /// lookup refs.
+    ///
+    /// The `Term` instances produce share interned TempId handles and have no LookupRef references.
+    fn resolve_lookup_refs<I>(&self, lookup_ref_map: &AVMap, terms: I) -> Result<Vec<TermWithTempIds>> where I: IntoIterator<Item=TermWithTempIdsAndLookupRefs> {
+        terms.into_iter().map(|term: TermWithTempIdsAndLookupRefs| -> Result<TermWithTempIds> {
+            match term {
+                Term::AddOrRetract(op, e, a, v) => {
+                    let e = replace_lookup_ref(&lookup_ref_map, e, |x| x)?;
+                    let v = replace_lookup_ref(&lookup_ref_map, v, |x| TypedValue::Ref(x))?;
+                    Ok(Term::AddOrRetract(op, e, a, v))
+                },
+            }
+        }).collect::<Result<Vec<_>>>()
+    }
+
     /// Transact the given `entities` against the given SQLite `conn`, using the metadata in
     /// `self.DB`.
     ///
@@ -932,236 +1008,35 @@ impl DB {
                           true));
 
         // We're not resolving these temp_ids correctly; see the upsert code below for more details.
-        let mut temp_ids = intern_set::InternSet::new();
-        temp_ids.intern(":db.part/tx".to_string());
+        // temp_ids.intern(":db.part/tx".to_string());
 
         // We don't yet support lookup refs, so this isn't mutable.  Later, it'll be mutable.
         let lookup_refs: intern_set::InternSet<AVPair> = intern_set::InternSet::new();
 
+        // TODO: extract the tempids set as well.
+        // Pipeline stage 1: entities -> terms with tempids and lookup refs.
+        let terms_with_temp_ids_and_lookup_refs = self.entities_into_terms_with_temp_ids_and_lookup_refs(entities)?;
 
-        // Right now, this could be a for loop, saving some mapping, collecting, and type
-        // annotations.  However, I expect it to be a multi-stage map as we start to transform the
-        // underlying entities, in which case this expression is more natural than for loops.
-        let terms: Vec<Result<TermWithTempIdsAndLookupRefs>> = entities.into_iter()
-            .map(|entity: Entity| -> Result<TermWithTempIdsAndLookupRefs> {
-            match entity {
-                // Entity::Map {
-                //     map: map,
-                // } => {
-                //     // Keys (attributes) are entids or lookup refs; if they are repeated upon mapping to entids,
-                //     // that's an error.
+        // Pipeline stage 2: resolve lookup refs -> terms with tempids.
+        let lookup_ref_avs: Vec<&(i64, TypedValue)> = lookup_refs.inner.iter().map(|rc| &**rc).collect();
+        let lookup_ref_map: AVMap = self.resolve_avs(conn, &lookup_ref_avs[..])?;
 
-                //     // The :db/id key can be missing, in which case the corresponding value is a new TempID.
+        let terms_with_temp_ids = self.resolve_lookup_refs(&lookup_ref_map, terms_with_temp_ids_and_lookup_refs)?;
 
-                //     let map = map.into_iter().map(|(k, v)| {
-                //         let e: i64 = match k {
-                //             entmod::Entid::Entid(ref e__) => *e__,
-                //             entmod::Entid::Ident(ref e__) => *self.schema.require_entid(&e__.to_string())?,
-                //         };
-                //         Ok((e, v))
-                //     }).collect::<Result<BTreeMap<Entid, Value>>>()?;
-                //     Ok(())
-                // },
-
-                Entity::AddOrRetract {
-                    op: op_,
-                    e: e_, // entmod::EntidOrLookupRefOrTempId::Entid(ref e_),
-                    a: a_,
-                    v: v_ } => {
-
-                    let a: i64 = match a_ {
-                        entmod::Entid::Entid(ref a__) => *a__,
-                        entmod::Entid::Ident(ref a__) => *self.schema.require_entid(&a__.to_string())?,
-                    };
-
-                    let attribute: &Attribute = self.schema.require_attribute_for_entid(&a)?;
-
-                    let e = match e_ {
-                        entmod::EntidOrLookupRefOrTempId::Entid(e__) => {
-                            let e: i64 = match e__ {
-                                entmod::Entid::Entid(ref e__) => *e__,
-                                entmod::Entid::Ident(ref e__) => *self.schema.require_entid(&e__.to_string())?,
-                            };
-                            std::result::Result::Ok(e) // TODO: make this more pleasant?
-                        },
-
-                        entmod::EntidOrLookupRefOrTempId::TempId(e__) => {
-                            std::result::Result::Err(LookupRefOrTempId::TempId(temp_ids.intern(e__)))
-                        },
-
-                        x @ entmod::EntidOrLookupRefOrTempId::LookupRef(_) => {
-                            bail!(ErrorKind::NotYetImplemented(format!("Transacting lookup-refs is not yet implemented: {:?}", x)))
-                        },
-                    };
-
-                    let v = {
-                        if attribute.value_type == ValueType::Ref && v_.is_text() {
-                            std::result::Result::Err(LookupRefOrTempId::TempId(temp_ids.intern(v_.into_text().unwrap())))
-                        } else if attribute.value_type == ValueType::Ref && v_.is_vector() && v_.as_vector().unwrap().len() == 2 {
-                            bail!(ErrorKind::NotYetImplemented(format!("Transacting lookup-refs is not yet implemented: {:?}", 1))) // entity)))
-                            // let elements = v_.as_vector();
-                            // // Need to type-check. In [a v], a should be an entid and v should be whatever a expects.
-                            // let lr_a_value = elements[0].unwrap();
-                            // let lr_v_value = elements[1].unwrap();
-                            // if let Some(lr_a) = lr_a_value.as_integer() {
-
-                            // } else {
-                            //     bail!(ErrorKind::NotYetImplemented(format!("Transacting :db/fulltext entities is not yet implemented: {:?}", entity)))
-                            // }
-                            // self.to_typed_value(elements[0].unwrap(),
-
-                            // let av = AVPair(elements.
-                            // TypedValueOr::Other(EntidOrLookupRefOrTempId::LookupRef(lookup_refs.insert()))
-                            // // if attribute.value_type == ValueType::Ref && v_.is_text() {
-                        } else {
-
-                            // Here is where we do schema-aware typechecking: either assert that the
-                            // given value is in the attribute's value set, or (in limited cases) to
-                            // coerce the value into the attribute's value set.
-                            let typed_value: TypedValue = self.to_typed_value(&v_, &attribute)?;
-
-                            std::result::Result::Ok(typed_value)
-                        }
-                    };
-
-                    Ok(Term::AddOrRetract(op_, e, a, v))
-
-                    // let attribute: &Attribute = self.schema.require_attribute_for_entid(&a)?;
-                    // if attribute.fulltext {
-                    //     bail!(ErrorKind::NotYetImplemented(format!("Transacting :db/fulltext entities is not yet implemented: {:?}", entity)))
-                    // }
-
-                    // let added = true;
-                    // if attribute.multival {
-                    //     non_fts_many.push((e, a, typed_value, added));
-                    // } else {
-                    //     non_fts_one.push((e, a, typed_value, added));
-                    // }
-                    // Ok(())
-                },
-
-                // Entity::Retract {
-                //     e: entmod::EntidOrLookupRefOrTempId::Entid(ref e_),
-                //     a: ref a_,
-                //     v: ref v_ } => {
-
-                //     let e: i64 = match e_ {
-                //         &entmod::Entid::Entid(ref e__) => *e__,
-                //         &entmod::Entid::Ident(ref e__) => *self.schema.require_entid(&e__.to_string())?,
-                //     };
-
-                //     let a: i64 = match a_ {
-                //         &entmod::Entid::Entid(ref a__) => *a__,
-                //         &entmod::Entid::Ident(ref a__) => *self.schema.require_entid(&a__.to_string())?,
-                //     };
-
-                //     let attribute: &Attribute = self.schema.require_attribute_for_entid(&a)?;
-                //     if attribute.fulltext {
-                //         bail!(ErrorKind::NotYetImplemented(format!("Transacting :db/fulltext entities is not yet implemented: {:?}", entity)))
-                //     }
-
-                //     // This is our chance to do schema-aware typechecking: to either assert that the
-                //     // given value is in the attribute's value set, or (in limited cases) to coerce
-                //     // the value into the attribute's value set.
-                //     let typed_value: TypedValue = self.to_typed_value(v_, &attribute)?;
-
-                //     let added = false;
-
-                //     if attribute.multival {
-                //         non_fts_many.push((e, a, typed_value, added));
-                //     } else {
-                //         non_fts_one.push((e, a, typed_value, added));
-                //     }
-                //     Ok(())
-                // },
-
-                _ => bail!(ErrorKind::NotYetImplemented(format!("Transacting this entity is not yet implemented: {:?}", entity)))
-            }
-        })
-    //         .map(|term: Result<Term<LookupRefOrTempId>>| -> Result<Term<Rc<String>>> {
-    //             term.and_then(|term| {
-    //                 // () // Ok(())
-    //                 match term {
-    // // AddOrRetract(OpType, T, Entid, TypedValueOr<T>),
-    // // RetractAttribute(T, Entid),
-    // // RetractEntity(T)
-    //                     Term::AddOrRetract(op, e, a, v) => {
-    //                         // TODO: map_other.  Or just use Result<T, >.
-    //                         let e_ = match e {
-    //                             EntidOr::Other(LookupRefOrTempId::LookupRef(_)) => {
-    //                                 bail!(ErrorKind::NotYetImplemented(format!("Transacting lookup-refs is not yet implemented: {:?}", term)))
-    //                             },
-    //                             EntidOr::Other(LookupRefOrTempId::TempId(e_)) => EntidOr::Other(e_),
-    //                             EntidOr::EntidLeft(e_) => EntidOr::EntidLeft(e_),
-    //                         };
-
-    //                         let v_ = match v {
-    //                             TypedValueOr::Other(LookupRefOrTempId::LookupRef(_)) => {
-    //                                 bail!(ErrorKind::NotYetImplemented(format!("Transacting lookup-refs is not yet implemented: {:?}", term)))
-    //                             },
-    //                             TypedValueOr::Other(LookupRefOrTempId::TempId(e_)) => TypedValueOr::Other(e_),
-    //                             TypedValueOr::ValueLeft(e_) => TypedValueOr::ValueLeft(e_),
-    //                         };
-
-    //                         Ok(Term::AddOrRetract(op, e_, a, v_))
-    //                     },
-
-    //                     _ => bail!(ErrorKind::NotYetImplemented(format!("Transacting this entity is not yet implemented: {:?}", term)))
-    //                 }
-    //             })
-    //             // Ok(())
-    //         })
-            .collect();
-
-        let terms: Result<Vec<TermWithTempIdsAndLookupRefs>> = terms.into_iter().collect();
-        let terms = terms?;
-
-        let avs: Vec<&(i64, TypedValue)> = lookup_refs.inner.iter().map(|rc| &**rc).collect();
-        // your_vec.iter().map(|r: &Rc<T>| -> &T { &**r }).collect()
-
-        let lookup_map: AVMap = self.resolve_avs(conn, &avs[..])?;
-
-        fn replace_lookup_ref<T, U>(lookup_map: &AVMap, desired_or: std::result::Result<T, LookupRefOrTempId>, lift: U) -> Result<std::result::Result<T, TempId>> where U: FnOnce(Entid) -> T {
-            // TODO: explain this?  Make this more clear?
-            match desired_or {
-                std::result::Result::Ok(desired) => Ok(std::result::Result::Ok(desired)), // N.b., must unwrap here -- the ::Ok types are different!
-                std::result::Result::Err(other) => {
-                    match other {
-                        LookupRefOrTempId::TempId(t) => Ok(std::result::Result::Err(t)),
-                        LookupRefOrTempId::LookupRef(av) => lookup_map.get(&*av).map(|x| lift(*x)).map(std::result::Result::Ok).ok_or_else(|| ErrorKind::UnrecognizedIdent(format!("couldn't lookup [a v]: {:?}", (*av).clone())).into()),
-                    }
-                }
-            }
-        };
-
-        let terms: Result<Vec<TermWithTempIds>> = terms.into_iter().map(|term: TermWithTempIdsAndLookupRefs| -> Result<TermWithTempIds> {
-            match term {
-                Term::AddOrRetract(op, e, a, v) => {
-                    // let x: EntidOr<LookupRefOrTempId> = e;
-                    // let y: EntidOr<TempId> = replace_lookup_ref(&lookup_map, e)?;
-                    Ok(Term::AddOrRetract(op, replace_lookup_ref(&lookup_map, e, |x| x)?, a, replace_lookup_ref(&lookup_map, v, |x| TypedValue::Ref(x))?))
-                },
-                // _ => bail!(ErrorKind::NotYetImplemented(format!("Transacting this entity is not yet implemented: {:?}", 1))) // XXX
-            }
-        }).collect();
-        let terms = terms?;
-
+        // Pipeline stage 3: upsert tempids -> terms without tempids or lookup refs.
         // Now we can collect upsert populations.
-        let (mut generation, inert) = Generation::from(terms, self)?;
+        let (mut generation, inert_terms) = Generation::from(terms_with_temp_ids, self)?;
 
         // And evolve them forward.
         while generation.can_evolve() {
-            println!("Evolving generation: starting with {:?}", generation);
-
             // Evolve further.
             let temp_id_map = self.resolve_temp_id_avs(conn, &generation.temp_id_avs()[..])?;
             generation = generation.evolve_one_step(&temp_id_map);
         }
 
-        println!("Finished evolving; final generation: {:?}", generation);
-
         // Allocate entids for tempids that didn't upsert.  BTreeSet rather than HashSet so this is deterministic.
         let unresolved_temp_ids: BTreeSet<TempId> = generation.temp_ids_in_allocations();
+
         // TODO: track partitions for temporary IDs.
         let entids = self.allocate_entids(":db.part/user".to_string(), unresolved_temp_ids.len());
 
@@ -1170,8 +1045,9 @@ impl DB {
         let final_populations = generation.into_final_populations(&temp_id_allocations)?;
         let final_terms: Vec<TermWithoutTempIds> = [final_populations.resolved,
                                                     final_populations.allocated,
-                                                    inert.into_iter().map(|term| term.unwrap()).collect()].concat();
+                                                    inert_terms.into_iter().map(|term| term.unwrap()).collect()].concat();
 
+        // Pipeline stage 4: final terms (after rewriting) -> DB insertions.
         // Collect into non_fts_*.
         // TODO: use something like Clojure's group_by to do this.
         for term in final_terms {
@@ -1189,7 +1065,6 @@ impl DB {
                         non_fts_one.push((e, a, v, added));
                     }
                 },
-                // _ => bail!(ErrorKind::NotYetImplemented(format!("Transacting this term is not yet implemented: {:?}", term))) // TODO: reference original input.  Difficult!
             }
         }
 
