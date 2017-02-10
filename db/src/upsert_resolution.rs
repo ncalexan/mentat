@@ -20,26 +20,6 @@ use errors;
 use types::{Attribute, AVPair, DB, Entid, TypedValue};
 use internal_types::*;
 
-/// Population types classify entities into types that we care about.
-#[derive(Clone,Debug,Eq,Hash,Ord,PartialOrd,PartialEq)]
-enum PopulationType {
-    /// "Simple upserts" that look like [:db/add TEMPID a v], where a is :db.unique/identity.
-    UpsertsE,
-
-    /// "Complex upserts" that look like [:db/add TEMPID a OTHERID], where a is :db.unique/identity
-    UpsertsEV,
-
-    /// Entities that look like:
-    /// - [:db/add TEMPID b OTHERID], where b is not :db.unique/identity;
-    /// - [:db/add TEMPID b v], where b is not :db.unique/identity.
-    /// - [:db/add e b OTHERID].
-    /// - [:db/{retract,retractAttribute,retractEntity}] that reference a TEMPID.
-    Allocations,
-
-    /// Entities that do not reference temp IDs.
-    Inert,
-}
-
 /// A "Simple upsert" that looks like [:db/add TEMPID a v], where a is :db.unique/identity.
 #[derive(Clone,Debug,Eq,Hash,Ord,PartialOrd,PartialEq)]
 struct UpsertE(TempId, Entid, TypedValue);
@@ -48,6 +28,12 @@ struct UpsertE(TempId, Entid, TypedValue);
 #[derive(Clone,Debug,Eq,Hash,Ord,PartialOrd,PartialEq)]
 struct UpsertEV(TempId, Entid, TempId);
 
+/// A generation collects entities into populations at a single evolutionary step in the upsert
+/// resolution evolution process.
+///
+/// The upsert resolution process is only concerned with [:db/add ...] entities until the final
+/// entid allocations.  That's why we separate into special simple and complex upsert types
+/// immediately, and then collect the more general term types for final resolution.
 #[derive(Clone,Debug,Default,Eq,Hash,Ord,PartialOrd,PartialEq)]
 pub struct Generation {
     /// "Simple upserts" that look like [:db/add TEMPID a v], where a is :db.unique/identity.
@@ -71,122 +57,6 @@ pub struct Generation {
     resolved: Vec<TermWithoutTempIds>,
 }
 
-// impl Generation {
-//     /// Return true if it's possible to evolve this generation further.
-//     fn can_evolve(&self) -> bool {
-//         !self.upserts_e.is_empty()
-//     }
-
-//     /// Evolve this generation one step further by rewriting the existing :db/add entities using the
-//     /// given temporary IDs.
-//     ///
-//     /// TODO: Considering doing this in place; the function already consumes `self`.
-//     fn evolve_one_step(self, temp_id_map: &TempIdMap) -> Generation {
-//         let mut next = Generation::default();
-//         next.allocations = self.allocations;
-//         next.upserted = self.upserted;
-//         next.resolved = self.resolved;
-
-//         for UpsertE(t, _, a, v) in self.upserts_e {
-//             match temp_id_map.get(&*t) {
-//                 Some(&n) => next.upserted.push(Term::AddOrRetract(OpType::Add, n, a, v)),
-//                 None => next.allocations.push(Term::AddOrRetract(OpType::Add, Err(t), a, Ok(v))),
-//             }
-//         }
-
-//         for UpsertEV(t1, attribute, a, t2) in self.upserts_ev {
-//             match (temp_id_map.get(&*t1), temp_id_map.get(&*t2)) {
-//                 (Some(&n1), Some(&n2)) => next.resolved.push(Term::AddOrRetract(OpType::Add, n1, a, TypedValue::Ref(n2))),
-//                 (None, Some(&n2)) => next.upserts_e.push(UpsertE(t1, attribute, a, TypedValue::Ref(n2))),
-//                 (Some(&n1), None) => next.allocations.push(Term::AddOrRetract(OpType::Add, Ok(n1), a, Err(t2))),
-//                 (None, None) => next.allocations.push(Term::AddOrRetract(OpType::Add, Err(t1), a, Err(t2))),
-//             }
-//         }
-
-//         next
-//     }
-
-//     /// Collect id->[a v] pairs.
-//     ///
-//     /// Note: the return type is Box<> since `impl Trait` is not yet stable.
-//     fn av_pairs<'a>(&'a self) -> Box<Iterator<Item=(TempId, AVPair)> + 'a> {
-//         let i = self.upserts_e.iter().map(|&UpsertE(ref t, _, ref a, ref v)| { // in &self.upserts_e {
-//             // TODO: figure out how to make this less expensive, i.e., don't require clone() of an
-//             // arbitrary TypedValue.
-//             (t.clone(), (*a, v.clone()))
-//         });
-//         Box::new(i)
-//     }
-
-//     // /// Iterate any temporary IDs present in entities still requiring allocation.
-//     // ///
-//     // /// Note: the return type is Box<> since `impl Trait` is not yet stable.
-//     // fn temp_ids_iter<'a>(&'a self) -> Box<Iterator<Item=TempId> + 'a> {
-//     //     // fn collect<B: FromIterator<Self::Item>>(self) -> B
-//     //     for term in &self.allocations {
-//     //         match term {
-//     //             &Term::AddOrRetract(_, Err(ref t1), _, Err(ref t2)) => once(t1).chain(once(t2)) as &Iterator<Item=TempId>,
-//     //             &Term::AddOrRetract(_, Err(ref t1), _, Ok(_)) => once(t1) as &Iterator<Item=TempId>,
-//     //             &Term::AddOrRetract(_, Ok(_), _, Err(ref t2)) => once(t2) as &Iterator<Item=TempId>,
-//     //             &Term::AddOrRetract(_, Ok(_), _, Ok(_)) => empty() as &Iterator<Item=TempId>,
-//     //         }
-//     //     });
-
-//     //     Box::new(i)
-//     // }
-// }
-
-
-
-//         // // TODO: handle all allocations uniformly? // .into_iter().chain(self.allocations_e.into_iter()).chain(self.allocations_v.into_iter()) {
-//         // for term in self.allocations_ev {
-//         //     match term {
-//         //         Term::AddOrRetract(op, Err(t1), a, Err(t2)) => {
-//         //             match (temp_id_map.get(&*t1), temp_id_map.get(&*t2)) {
-//         //                 (Some(&n1), Some(&n2)) => next.resolved.push(Term::AddOrRetract(op, Ok(n1), a, Ok(TypedValue::Ref(n2)))),
-//         //                 (None, Some(&n2)) => next.allocations_e.push(Term::AddOrRetract(op, Err(t1), a, Ok(TypedValue::Ref(n2)))),
-//         //                 (Some(&n1), None) => next.allocations_v.push(Term::AddOrRetract(op, Ok(n1), a, Err(t2))),
-//         //                 (None, None) => next.allocations_ev.push(Term::AddOrRetract(op, Err(t1), a, Err(t2))),
-//         //             }
-//         //         },
-//         //         _ => panic!("At the disco"),
-//         //     }
-//         // }
-
-//         // // TODO: same as upserts_e!
-//         // for term in self.allocations_e {
-//         //     match term {
-//         //         Term::AddOrRetract(op, Err(t), a, v) => {
-//         //             match temp_id_map.get(&*t) {
-//         //                 Some(&n) => next.resolved.push(Term::AddOrRetract(op, Ok(n), a, v)),
-//         //                 None => next.allocations_e.push(Term::AddOrRetract(op, Err(t), a, v)),
-//         //             }
-//         //         },
-//         //         _ => panic!("At the disco"),
-//         //     }
-//         // }
-
-//         // for term in self.allocations_v {
-//         //     match term {
-//         //         Term::AddOrRetract(op, e, a, Err(t)) => {
-//         //             match temp_id_map.get(&*t) {
-//         //                 Some(&n) => next.resolved.push(Term::AddOrRetract(op, e, a, Ok(TypedValue::Ref(n)))),
-//         //                 None => next.allocations_v.push(Term::AddOrRetract(op, e, a, Err(t))),
-//         //             }
-//         //         },
-//         //         _ => panic!("At the disco"),
-//         //     }
-//         // }
-
-//         // next.inert = self.inert;
-
-//     //     next
-
-//     //     // AddOrRetract(OpType, E, Entid, V),
-//     //     // RetractAttribute(E, Entid),
-//     //     // RetractEntity(E)
-//     // }
-
 #[derive(Clone,Debug,Default,Eq,Hash,Ord,PartialOrd,PartialEq)]
 pub struct FinalPopulations {
     /// Upserts that upserted.
@@ -197,22 +67,6 @@ pub struct FinalPopulations {
 
     /// Allocations that required new entid allocations.
     pub allocated: Vec<TermWithoutTempIds>,
-}
-
-impl TermWithTempIds {
-    fn population_type(&self, db: &DB) -> errors::Result<PopulationType> {
-        let is_unique = |a: &Entid| -> errors::Result<bool> {
-            let attribute: &Attribute = db.schema.require_attribute_for_entid(a)?;
-            Ok(attribute.unique_identity)
-        };
-
-        match self {
-            &Term::AddOrRetract(ref op, Err(_), ref a, Err(_)) => if op == &OpType::Add && is_unique(a)? { Ok(PopulationType::UpsertsEV) } else { Ok(PopulationType::Allocations) },
-            &Term::AddOrRetract(ref op, Err(_), ref a, Ok(_)) => if op == &OpType::Add && is_unique(a)? { Ok(PopulationType::UpsertsE) } else { Ok(PopulationType::Allocations) },
-            &Term::AddOrRetract(_, Ok(_), _, Err(_)) => Ok(PopulationType::Allocations),
-            &Term::AddOrRetract(_, Ok(_), _, Ok(_)) => Ok(PopulationType::Inert),
-        }
-    }
 }
 
 impl Generation {
@@ -288,6 +142,8 @@ impl Generation {
         }
 
         for term in self.allocations {
+            // TODO: find an expression that destructures less?  I still expect this to be efficient
+            // but it's a little verbose.
             match term {
                 Term::AddOrRetract(op, Err(t1), a, Err(t2)) => {
                     match (temp_id_map.get(&*t1), temp_id_map.get(&*t2)) {
@@ -329,7 +185,8 @@ impl Generation {
     }
 
     /// After evolution is complete, yield the set of tempids that require entid allocation.  These
-    /// are the tempids that didn't upsert to existing entids.
+    /// are the tempids that appeared in [:db/add ...] entities, but that didn't upsert to existing
+    /// entids.
     pub fn temp_ids_in_allocations(&self) -> BTreeSet<TempId> {
         assert!(self.upserts_e.is_empty(), "All upserts should have been upserted, resolved, or moved to the allocated population!");
         assert!(self.upserts_ev.is_empty(), "All upserts should have been upserted, resolved, or moved to the allocated population!");
@@ -338,17 +195,20 @@ impl Generation {
 
         for term in self.allocations.iter() {
             match term {
-                &Term::AddOrRetract(_, Err(ref t1), _, Err(ref t2)) => {
+                &Term::AddOrRetract(OpType::Add, Err(ref t1), _, Err(ref t2)) => {
                     temp_ids.insert(t1.clone());
                     temp_ids.insert(t2.clone());
                 },
-                &Term::AddOrRetract(_, Err(ref t), _, Ok(_)) => {
+                &Term::AddOrRetract(OpType::Add, Err(ref t), _, Ok(_)) => {
                     temp_ids.insert(t.clone());
                 },
-                &Term::AddOrRetract(_, Ok(_), _, Err(ref t)) => {
+                &Term::AddOrRetract(OpType::Add, Ok(_), _, Err(ref t)) => {
                     temp_ids.insert(t.clone());
                 },
-                &Term::AddOrRetract(_, Ok(_), _, Ok(_)) => unreachable!(),
+                &Term::AddOrRetract(OpType::Add, Ok(_), _, Ok(_)) => unreachable!(),
+                &Term::AddOrRetract(OpType::Retract, _, _, _) => {
+                    // [:db/retract ...] never allocate entids.
+                },
             }
         }
 
@@ -369,6 +229,8 @@ impl Generation {
         for term in self.allocations {
             let allocated = match term {
                 // TODO: consider require implementing require on temp_id_map.
+                // TODO: handle incorrect [:db/retract "t1" ...] entities, where "t1" does not
+                // upsert elsewhere.
                 Term::AddOrRetract(op, Err(t1), a, Err(t2)) => {
                     match (temp_id_map.get(&*t1), temp_id_map.get(&*t2)) {
                         (Some(&n1), Some(&n2)) => Term::AddOrRetract(op, n1, a, TypedValue::Ref(n2)),
