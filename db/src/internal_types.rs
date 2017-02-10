@@ -36,7 +36,7 @@ pub type LookupRef = Rc<AVPair>;
 
 /// Internal representation of an entid on its way to resolution.  We either have the simple case (a
 /// numeric entid), a lookup-ref that still needs to be resolved (an atomized [a v] pair), or a temp
-/// ID that needs to be upserted or allocated (an atomized temp ID).
+/// ID that needs to be upserted or allocated (an atomized tempid).
 #[derive(Clone,Debug,Eq,Hash,Ord,PartialOrd,PartialEq)]
 pub enum LookupRefOrTempId {
     LookupRef(LookupRef),
@@ -49,7 +49,7 @@ pub type TermWithoutTempIds = Term<Entid, TypedValue>;
 pub type Population = Vec<TermWithTempIds>;
 
 impl TermWithTempIds {
-    // These have no temp IDs by definition, and just need to be unwrapped.  This operation might
+    // These have no tempids by definition, and just need to be unwrapped.  This operation might
     // also be called "lowering" or "level lowering", but the concept of "unwrapping" is common in
     // Rust and seems appropriate here.
     pub fn unwrap(self) -> TermWithoutTempIds {

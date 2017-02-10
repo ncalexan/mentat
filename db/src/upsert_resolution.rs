@@ -49,11 +49,11 @@ pub struct Generation {
     /// - [:db/add e b OTHERID].
     allocations: Vec<TermWithTempIds>,
 
-    /// Entities that upserted and no longer reference temp IDs.  These assertions are guaranteed to
+    /// Entities that upserted and no longer reference tempids.  These assertions are guaranteed to
     /// be in the store.
     upserted: Vec<TermWithoutTempIds>,
 
-    /// Entities that resolved due to other upserts and no longer reference temp IDs.  These
+    /// Entities that resolved due to other upserts and no longer reference tempids.  These
     /// assertions may or may not be in the store.
     resolved: Vec<TermWithoutTempIds>,
 }
@@ -71,8 +71,8 @@ pub struct FinalPopulations {
 }
 
 impl Generation {
-    /// Split entities into a generation of populations that need to evolve to have their temp IDs
-    /// resolved or allocated, and a population of inert entities that do not reference temp IDs.
+    /// Split entities into a generation of populations that need to evolve to have their tempids
+    /// resolved or allocated, and a population of inert entities that do not reference tempids.
     pub fn from<I>(terms: I, db: &DB) -> errors::Result<(Generation, Population)> where I: IntoIterator<Item=TermWithTempIds> {
         let mut generation = Generation::default();
         let mut inert = vec![];
@@ -237,21 +237,21 @@ impl Generation {
                     match (op, temp_id_map.get(&*t1), temp_id_map.get(&*t2)) {
                         (op, Some(&n1), Some(&n2)) => Term::AddOrRetract(op, n1, a, TypedValue::Ref(n2)),
                         (OpType::Add, _, _) => unreachable!(), // This is a coding error -- every tempid in a :db/add entity should resolve or be allocated.
-                        (OpType::Retract, _, _) => bail!(ErrorKind::NotYetImplemented(format!("[:db/retract ...] entity referenced temp ID that did not upsert: one of {}, {}", t1, t2))),
+                        (OpType::Retract, _, _) => bail!(ErrorKind::NotYetImplemented(format!("[:db/retract ...] entity referenced tempid that did not upsert: one of {}, {}", t1, t2))),
                     }
                 },
                 Term::AddOrRetract(op, Err(t), a, Ok(v)) => {
                     match (op, temp_id_map.get(&*t)) {
                         (op, Some(&n)) => Term::AddOrRetract(op, n, a, v),
                         (OpType::Add, _) => unreachable!(), // This is a coding error.
-                        (OpType::Retract, _) => bail!(ErrorKind::NotYetImplemented(format!("[:db/retract ...] entity referenced temp ID that did not upsert: {}", t))),
+                        (OpType::Retract, _) => bail!(ErrorKind::NotYetImplemented(format!("[:db/retract ...] entity referenced tempid that did not upsert: {}", t))),
                     }
                 },
                 Term::AddOrRetract(op, Ok(e), a, Err(t)) => {
                     match (op, temp_id_map.get(&*t)) {
                         (op, Some(&n)) => Term::AddOrRetract(op, e, a, TypedValue::Ref(n)),
                         (OpType::Add, _) => unreachable!(), // This is a coding error.
-                        (OpType::Retract, _) => bail!(ErrorKind::NotYetImplemented(format!("[:db/retract ...] entity referenced temp ID that did not upsert: {}", t))),
+                        (OpType::Retract, _) => bail!(ErrorKind::NotYetImplemented(format!("[:db/retract ...] entity referenced tempid that did not upsert: {}", t))),
                     }
                 },
                 Term::AddOrRetract(_, Ok(_), _, Ok(_)) => unreachable!(), // This is a coding error -- these should not be in allocations.

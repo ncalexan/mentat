@@ -451,7 +451,7 @@ pub enum SearchType {
 
 // Resolve all lookup refs: TermWithTempIdsAndLookupRefs -> TermWithTempIds.
 // Split AddWithTempIds from everything else.  Do upsert resolution, tracking anything that upserts and anything that resolves.
-// Retract, RetractAttribute, RetractEntity cannot have non-resolved temp ID!
+// Retract, RetractAttribute, RetractEntity cannot have non-resolved tempid!
 // Take Allocations* and the complement of AddWithTempIds, allocate entids, and TermWithTempIds -> TermWithoutTempIds
 // TermWithoutTempIds -> temporary tables.
 
@@ -471,7 +471,7 @@ struct AllocationsE(TempId, Entid, Value);
 /// Entities that look like [:db/add e b OTHERID].
 struct AllocationsV(Entid, Entid, TempId);
 
-/// Entities that do not reference temp IDs.
+/// Entities that do not reference tempids.
 struct Inert(Entid, Entid, Value);
 
 impl DB {
@@ -595,7 +595,7 @@ impl DB {
                 if let Some(previous_n) = temp_id_map.get(&*temp_id) {
                     if n != previous_n {
                         // Conflicting upsert!  TODO: collect conflicts and give more details on what failed this transaction.
-                        bail!(ErrorKind::NotYetImplemented(format!("Conflicting upsert: temp ID '{}' resolves to more than one entid: {:?}, {:?}", temp_id, previous_n, n))) // XXX
+                        bail!(ErrorKind::NotYetImplemented(format!("Conflicting upsert: tempid '{}' resolves to more than one entid: {:?}, {:?}", temp_id, previous_n, n))) // XXX
                     }
                 }
                 temp_id_map.insert(temp_id.clone(), *n);
@@ -1160,7 +1160,7 @@ impl DB {
 
         println!("Finished evolving; final generation: {:?}", generation);
 
-        // Allocate entids for temp IDs that didn't upsert.  BTreeSet rather than HashSet so this is deterministic.
+        // Allocate entids for tempids that didn't upsert.  BTreeSet rather than HashSet so this is deterministic.
         let unresolved_temp_ids: BTreeSet<TempId> = generation.temp_ids_in_allocations();
         // TODO: track partitions for temporary IDs.
         let entids = self.allocate_entids(":db.part/user".to_string(), unresolved_temp_ids.len());
