@@ -35,8 +35,15 @@ use mentat_core::{
 use mentat_tx::entities as entmod;
 use mentat_tx::entities::{Entity, OpType};
 use errors::{ErrorKind, Result, ResultExt};
-use types::{DB, Partition, PartitionMap};
 use schema::SchemaBuilding;
+use types::{
+    AVMap,
+    AVPair,
+    DB,
+    Partition,
+    PartitionMap,
+    TxReport,
+};
 
 pub fn new_connection<T>(uri: T) -> rusqlite::Result<rusqlite::Connection> where T: AsRef<Path> {
     let conn = match uri.as_ref().to_string_lossy().len() {
