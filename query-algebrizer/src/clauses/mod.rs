@@ -136,6 +136,7 @@ impl<K: Clone + Ord, V: Clone> Intersection<K> for BTreeMap<K, V> {
             self.clear();
         }
 
+        // This needs a test.  Pass in an unbound variable.
         let expected_remaining = cmp::max(0, self.len() - ks.len());
         let mut to_remove = Vec::with_capacity(expected_remaining);
         for k in self.keys() {

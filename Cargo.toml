@@ -21,7 +21,7 @@ bundled_sqlite3 = ["rusqlite/bundled"]
 sqlcipher = ["rusqlite/sqlcipher", "mentat_db/sqlcipher"]
 
 [workspace]
-members = ["tools/cli", "ffi"]
+members = ["tools/cli", "ffi", "sync15/logins"]
 
 [build-dependencies]
 rustc_version = "0.2"
@@ -32,6 +32,9 @@ error-chain = { git = "https://github.com/rnewman/error-chain", branch = "rnewma
 lazy_static = "0.2"
 time = "0.1"
 uuid = { version = "0.5", features = ["v4", "serde"] }
+
+[dev-dependencies]
+env_logger = "0.5"
 
 [dependencies.rusqlite]
 version = "0.13"

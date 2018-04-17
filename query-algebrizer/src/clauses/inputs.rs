@@ -30,6 +30,7 @@ use errors::{
 /// the bindings that will be used at execution time.
 /// When built correctly, `types` is guaranteed to contain the types of `values` -- use
 /// `QueryInputs::new` or `QueryInputs::with_values` to construct an instance.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialOrd, PartialEq)]
 pub struct QueryInputs {
     pub(crate) types: BTreeMap<Variable, ValueType>,
     pub(crate) values: BTreeMap<Variable, TypedValue>,

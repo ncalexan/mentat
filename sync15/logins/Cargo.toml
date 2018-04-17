@@ -1,0 +1,32 @@
+[package]
+name = "mentat_sync15_logins"
+version = "0.0.1"
+
+[lib]
+name = "mentat_sync15_logins"
+path = "src/lib.rs"
+
+[dependencies]
+chrono = "0.4"
+error-chain = { git = "https://github.com/rnewman/error-chain", branch = "rnewman/sync" }
+lazy_static = "0.2"
+log = "0.4"
+uuid = { version = "0.5", features = ["v4", "serde"] }
+
+[dev-dependencies]
+env_logger = "0.5"
+
+[dependencies.mentat]
+path = "../.."
+
+[dependencies.edn]
+path = "../../edn"
+
+[dependencies.mentat_query]
+path = "../../query"
+
+[dependencies.mentat_core]
+path = "../../core"
+
+[dependencies.mentat_db]
+path = "../../db"

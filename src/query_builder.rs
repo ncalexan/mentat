@@ -87,7 +87,30 @@ impl<'a> QueryBuilder<'a> {
         self
     }
 
+    pub fn add_where(&mut self, where_clause: &str) -> &mut Self {
+        // TODO: don't be lazy.
+        self.query = self.query.trim().to_string();
+        let x = self.query.len() - 1;
+        self.query.split_off(x);
+        self.query.push_str("\n");
+        self.query.push_str(where_clause);
+        self.query.push_str("]");
+        self
+    }
+
+    pub fn add_limit(&mut self, limit_clause: &str) -> &mut Self {
+        // TODO: don't be lazy.
+        self.query = self.query.trim().to_string();
+        let x = self.query.len() - 1;
+        self.query.split_off(x);
+        self.query.push_str("\n:limit\n");
+        self.query.push_str(limit_clause);
+        self.query.push_str("]");
+        self
+    }
+
     pub fn execute(&mut self) -> Result<QueryOutput> {
+        // println!("{}", self.query);
         let values = ::std::mem::replace(&mut self.values, Default::default());
         let types = ::std::mem::replace(&mut self.types, Default::default());
         let query_inputs = QueryInputs::new(types, values)?;
