@@ -560,13 +560,28 @@ impl Repl {
     }
 
     pub fn execute_transact(&mut self, transaction: String) {
-        match self.transact(transaction) {
+        match self.transact(&transaction) {
             Result::Ok(report) => println!("{:?}", report),
-            Result::Err(err) => eprintln!("Error: {:?}.", err),
+            Result::Err(err) => {
+                println!("Error: {:?}.", err);
+                println!("Error: {}.", err);
+                match err {
+                    ::mentat::errors::Error(::mentat::errors::ErrorKind::EdnParseError(_), _) => {
+                        println!("tx parse Error: {:?}.", err);
+                        // println!("tx parse Error: {}.", err);
+                        // println!("tx parse Error: {:?}.", vpe);
+                        // println!("tx parse Error: {}.", vpe);
+                        // println!("at {}", &transaction[vpe.position.0..vpe.position.1]);
+                    },
+                    _ => {
+                        println!("non-tx parse Error: {:?}.", err);
+                    },
+                }
+            },
         }
     }
 
-    fn transact(&mut self, transaction: String) -> ::mentat::errors::Result<TxReport> {
+    fn transact(&mut self, transaction: &str) -> ::mentat::errors::Result<TxReport> {
         let mut tx = self.store.begin_transaction()?;
         let report = tx.transact(transaction)?;
         tx.commit()?;

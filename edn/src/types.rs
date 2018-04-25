@@ -77,11 +77,11 @@ pub enum SpannedValue {
 
 /// Span represents the current offset (start, end) into the input string.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub struct Span(pub u32, pub u32);
+pub struct Span(pub usize, pub usize);
 
 impl Span {
     pub fn new(start: usize, end: usize) -> Span {
-        Span(start as u32, end as u32)
+        Span(start as usize, end as usize)
     }
 }
 

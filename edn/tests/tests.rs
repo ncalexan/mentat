@@ -354,7 +354,7 @@ fn test_text() {
     assert_eq!(parse::value(raw_edn).unwrap(),
                ValueAndSpan {
                    inner: SpannedValue::Text(raw_string.to_string()),
-                   span: Span(0, raw_edn.len() as u32)
+                   span: Span(0, raw_edn.len() as usize)
                });
 }
 
