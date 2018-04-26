@@ -39,6 +39,9 @@ use rusqlite;
 use rusqlite::{
     TransactionBehavior,
 };
+use rusqlite::types::{
+    ToSql,
+};
 
 use edn;
 use edn::{
@@ -65,7 +68,6 @@ use mentat_db::cache::{
     SQLiteAttributeCache,
 };
 
-use mentat_db::db;
 use mentat_db::{
     transact,
     transact_terms,
@@ -76,7 +78,8 @@ use mentat_db::{
     TxObservationService,
     TxObserver,
 };
-
+use mentat_db::db;
+use mentat_db::debug as db_debug;
 use mentat_db::internal_types::TermWithTempIds;
 
 use mentat_query_pull::{
@@ -189,6 +192,13 @@ pub trait Syncable {
     fn sync(&mut self, server_uri: &String, user_uuid: &String) -> Result<()>;
 }
 
+pub trait Dumpable {
+    fn dump_datoms(&self) -> Result<edn::Value>;
+    fn dump_datoms_after(&self, tx: Entid) -> Result<edn::Value>;
+    fn dump_last_transaction(&self) -> Result<edn::Value>;
+    fn dump_sql_query(&self, sql: &str, params: &[&ToSql]) -> Result<String>;
+}
+
 /// Represents an in-progress, not yet committed, set of changes to the store.
 /// Call `commit` to commit your changes, or `rollback` to discard them.
 /// A transaction is held open until you do so.
@@ -208,6 +218,42 @@ pub struct InProgress<'a, 'c> {
 /// Represents an in-progress set of reads to the store. Just like `InProgress`,
 /// which is read-write, but only allows for reads.
 pub struct InProgressRead<'a, 'c>(InProgress<'a, 'c>);
+
+impl<'a, 'c> Dumpable for InProgress<'a, 'c> {
+    fn dump_datoms(&self) -> Result<edn::Value> {
+        db_debug::datoms(&self.transaction, &self.schema).map(|x| x.into_edn()).map_err(|e| e.into())
+    }
+
+    fn dump_datoms_after(&self, tx: Entid) -> Result<edn::Value> {
+        db_debug::datoms_after(&self.transaction, &self.schema, tx).map(|x| x.into_edn()).map_err(|e| e.into())
+    }
+
+    fn dump_last_transaction(&self) -> Result<edn::Value> {
+        db_debug::transactions_after(&self.transaction, &self.schema, self.last_tx_id() - 1).map(|x| x.0[0].into_edn()).map_err(|e| e.into())
+    }
+
+    fn dump_sql_query(&self, sql: &str, params: &[&ToSql]) -> Result<String> {
+        db_debug::dump_sql_query(&self.transaction, sql, params).map_err(|e| e.into())
+    }
+}
+
+impl<'a, 'c> Dumpable for InProgressRead<'a, 'c> {
+    fn dump_datoms(&self) -> Result<edn::Value> {
+        self.0.dump_datoms()
+    }
+
+    fn dump_datoms_after(&self, tx: i64) -> Result<edn::Value> {
+        self.0.dump_datoms_after(tx)
+    }
+
+    fn dump_last_transaction(&self) -> Result<edn::Value> {
+        self.0.dump_last_transaction()
+    }
+
+    fn dump_sql_query(&self, sql: &str, params: &[&ToSql]) -> Result<String> {
+        self.0.dump_sql_query(sql, params)
+    }
+}
 
 impl<'a, 'c> Queryable for InProgressRead<'a, 'c> {
     fn q_once<T>(&self, query: &str, inputs: T) -> Result<QueryOutput>
