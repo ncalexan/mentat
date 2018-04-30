@@ -46,6 +46,7 @@ mod schema;
 pub mod tx_observer;
 mod watcher;
 mod tx;
+mod tx_checking;
 pub mod types;
 mod upsert_resolution;
 
