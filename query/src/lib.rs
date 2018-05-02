@@ -8,5 +8,8 @@
 // CONDITIONS OF ANY KIND, either express or implied. See the License for the
 // specific language governing permissions and limitations under the License.
 
-extern crate edn;
+#[allow(unused_imports)]
+#[macro_use] extern crate edn;
+pub use edn::entities;
+pub use edn::entity_builder;
 pub use edn::query::*;

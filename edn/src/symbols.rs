@@ -27,6 +27,12 @@ macro_rules! ns_keyword {
 #[derive(Clone,Debug,Eq,Hash,Ord,PartialOrd,PartialEq)]
 pub struct PlainSymbol(pub String);
 
+impl<T> From<T> for PlainSymbol where T: Into<String> {
+    fn from(x: T) -> Self {
+        PlainSymbol::plain(x.into())
+    }
+}
+
 #[derive(Clone,Debug,Eq,Hash,Ord,PartialOrd,PartialEq)]
 pub struct NamespacedSymbol(NamespaceableName);
 

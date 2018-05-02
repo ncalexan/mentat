@@ -50,6 +50,18 @@ pub enum Entid {
     Ident(Keyword),
 }
 
+impl From<i64> for Entid {
+    fn from(v: i64) -> Self {
+        Entid::Entid(v)
+    }
+}
+
+impl From<Keyword> for Entid {
+    fn from(v: Keyword) -> Self {
+        Entid::Ident(v)
+    }
+}
+
 impl Entid {
     pub fn unreversed(&self) -> Option<Entid> {
         match self {
@@ -101,6 +113,55 @@ pub enum ValuePlace<V> {
     MapNotation(MapNotation<V>),
 }
 
+impl<V> From<TxFunction> for ValuePlace<V> {
+    fn from(v: TxFunction) -> Self {
+        ValuePlace::TxFunction(v)
+    }
+}
+
+// // TODO: think more about how general we want this lift to be.
+// impl<V> From<V> for ValuePlace<V> {
+//     fn from(v: V) -> Self {
+//         ValuePlace::Atom(v)
+//     }
+// }
+
+impl<V> From<LookupRef<V>> for ValuePlace<V> {
+    fn from(v: LookupRef<V>) -> Self {
+        ValuePlace::LookupRef(v)
+    }
+}
+
+impl<V> From<Vec<ValuePlace<V>>> for ValuePlace<V> {
+    fn from(v: Vec<ValuePlace<V>>) -> Self {
+        ValuePlace::Vector(v)
+    }
+}
+
+impl<V> From<MapNotation<V>> for ValuePlace<V> {
+    fn from(v: MapNotation<V>) -> Self {
+        ValuePlace::MapNotation(v)
+    }
+}
+
+impl From<i64> for AttributePlace {
+    fn from(v: i64) -> Self {
+        AttributePlace::Entid(Entid::Entid(v))
+    }
+}
+
+impl From<Keyword> for AttributePlace {
+    fn from(v: Keyword) -> Self {
+        AttributePlace::Entid(Entid::Ident(v))
+    }
+}
+
+// impl From<&str> for Entid {
+//     fn from(v: &str) -> Self {
+//         AttributePlace::Entid(Entid::Ident(Keyword::new v  ))
+//     }
+// }
+
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialOrd, PartialEq)]
 pub enum EntityPlace<V> {
     Entid(Entid),
@@ -112,6 +173,30 @@ pub enum EntityPlace<V> {
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialOrd, PartialEq)]
 pub enum AttributePlace {
     Entid(Entid),
+}
+
+impl<V, E: Into<Entid>> From<E> for EntityPlace<V> {
+    fn from(v: E) -> Self {
+        EntityPlace::Entid(v.into())
+    }
+}
+
+impl<V> From<LookupRef<V>> for EntityPlace<V> {
+    fn from(v: LookupRef<V>) -> Self {
+        EntityPlace::LookupRef(v)
+    }
+}
+
+impl<V> From<TxFunction> for EntityPlace<V> {
+    fn from(v: TxFunction) -> Self {
+        EntityPlace::TxFunction(v)
+    }
+}
+
+impl<V> From<TempId> for EntityPlace<V> {
+    fn from(v: TempId) -> Self {
+        EntityPlace::TempId(v)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialOrd, PartialEq)]

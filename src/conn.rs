@@ -92,6 +92,10 @@ use edn::entities::{
     OpType,
 };
 
+use edn::entity_builder::{
+    Builder,
+};
+
 use entity_builder::{
     InProgressBuilder,
     TermBuilder,
@@ -453,6 +457,10 @@ impl<'a, 'c> InProgress<'a, 'c> {
                .and_then(|(terms, tempid_set)| {
                     self.transact_terms(terms, tempid_set)
                })
+    }
+
+    pub fn transact_entity_builder<V: TransactableValue>(&mut self, builder: Builder<V>) -> Result<TxReport> {
+        self.transact_entities(builder.build())
     }
 
     pub fn transact_terms<I>(&mut self, terms: I, tempid_set: InternSet<TempId>) -> Result<TxReport> where I: IntoIterator<Item=TermWithTempIds> {

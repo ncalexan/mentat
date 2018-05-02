@@ -618,6 +618,13 @@ impl TypedValue {
     }
 }
 
+impl From<TypedValue> for ::edn::entities::ValuePlace<TypedValue> {
+    fn from(v: TypedValue) -> Self {
+        ::edn::entities::ValuePlace::Atom(v)
+    }
+}
+
+
 impl Binding {
     pub fn into_known_entid(self) -> Option<KnownEntid> {
         match self {

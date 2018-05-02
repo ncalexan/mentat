@@ -23,6 +23,7 @@ extern crate serde;
 extern crate serde_derive;
 
 pub mod entities;
+pub mod entity_builder;
 // Intentionally not pub.
 mod namespaceable_name;
 pub mod query;
