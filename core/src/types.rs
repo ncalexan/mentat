@@ -18,6 +18,7 @@ use ::std::ffi::{
 
 use ::std::ops::{
     Deref,
+    Index,
 };
 
 use ::std::os::raw::c_char;
@@ -378,6 +379,13 @@ impl<T> From<Vec<(Keyword, T)>> for StructuredMap where T: Into<Binding> {
     }
 }
 
+impl<T> Index<T> for StructuredMap where T: Into<Keyword> {
+    type Output = Binding;
+    fn index(&self, index: T) -> &Self::Output {
+        self.0.index(&ValueRc::new(index.into()))
+    }
+}
+
 impl Binding {
     /// Returns true if the provided type is `Some` and matches this value's type, or if the
     /// provided type is `None`.
@@ -400,7 +408,6 @@ impl Binding {
         }
     }
 }
-
 
 impl TypedValue {
     /// Returns true if the provided type is `Some` and matches this value's type, or if the
@@ -853,4 +860,33 @@ fn test_typed_value() {
     assert!(!TypedValue::typed_string("foo").is_congruent_with(ValueType::Boolean));
     assert!(TypedValue::typed_string("foo").is_congruent_with(ValueType::String));
     assert!(TypedValue::typed_string("foo").is_congruent_with(None));
+}
+
+#[cfg(debug_assertions)]
+impl TypedValue {
+    pub fn as_edn_value(&self) -> edn::Value {
+        match self {
+            &TypedValue::Ref(x) => edn::Value::Integer(x),
+            &TypedValue::Boolean(x) => edn::Value::Boolean(x),
+            &TypedValue::Instant(x) => edn::Value::Instant(x),
+            &TypedValue::Long(x) => edn::Value::Integer(x),
+            &TypedValue::Double(x) => edn::Value::Float(x),
+            &TypedValue::String(ref x) => edn::Value::Text(x.as_ref().clone()),
+            &TypedValue::Uuid(ref u) => edn::Value::Uuid(u.clone()),
+            &TypedValue::Keyword(ref x) => edn::Value::Keyword(x.as_ref().clone()),
+        }
+    }
+}
+
+#[cfg(debug_assertions)]
+impl Binding {
+    pub fn as_edn_value(&self) -> edn::Value {
+        use self::Binding::*;
+
+        match self {
+            &Scalar(ref v) => v.as_edn_value(),
+            &Vec(ref v) => edn::Value::Vector(v.as_ref().iter().map(|b| b.as_edn_value()).collect()),
+            &Map(ref m) => edn::Value::Map(m.as_ref().0.iter().map(|(k, b)| (edn::Value::Keyword(k.as_ref().clone()), b.as_edn_value())).collect()),
+        }
+    }
 }

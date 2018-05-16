@@ -515,3 +515,21 @@ pub fn query_projection(schema: &Schema, query: &AlgebraicQuery) -> Result<Eithe
         }.map(Either::Right)
     }
 }
+
+#[cfg(debug_assertions)]
+use mentat_core::edn::Value;
+
+#[cfg(debug_assertions)]
+impl QueryResults {
+    pub fn as_edn_value(&self) -> Value {
+        use QueryResults::*;
+        match self {
+            &Scalar(None) => Value::Nil,
+            &Scalar(Some(ref b)) => b.as_edn_value(),
+            &Tuple(None) => Value::Nil,
+            &Tuple(Some(ref bs)) => Value::List(bs.iter().map(|b| b.as_edn_value()).collect()),
+            &Coll(ref bs) => Value::Vector(bs.iter().map(|b| b.as_edn_value()).collect()),
+            &Rel(ref rs) => Value::Vector(rs.rows().map(|bs| Value::Vector(bs.iter().map(|b| b.as_edn_value()).collect())).collect()),
+        }
+    }
+}
