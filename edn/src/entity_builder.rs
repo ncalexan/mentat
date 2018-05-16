@@ -178,9 +178,11 @@ pub trait BuildEntities<W> where Self: Sized {
     where E: Into<EntityPlace<W>>,
           A: Into<AttributePlace>,
           V: Into<ValuePlace<W>>;
-    // fn retract<E, V>(&mut self, e: E, a: KnownEntid, v: V) -> Result<()>
-    // where E: IntoThing<KnownEntidOr<TempIdHandle>>,
-    //       V: IntoThing<TypedValueOr<TempIdHandle>>;
+
+    fn retract<E, A, V>(&mut self, e: E, a: A, v: V) -> ()
+    where E: Into<EntityPlace<W>>,
+          A: Into<AttributePlace>,
+          V: Into<ValuePlace<W>>;
 }
 
 impl<W> BuildEntities<W> for Builder<W> {
@@ -225,6 +227,16 @@ impl<W> BuildEntities<W> for Builder<W> {
         let a = a.into();
         let v = v.into();
         self.terms.push(Entity::AddOrRetract { op: OpType::Add, e, a, v });
+    }
+
+    fn retract<E, A, V>(&mut self, e: E, a: A, v: V) -> ()
+    where E: Into<EntityPlace<W>>,
+          A: Into<AttributePlace>,
+          V: Into<ValuePlace<W>> {
+        let e = e.into();
+        let a = a.into();
+        let v = v.into();
+        self.terms.push(Entity::AddOrRetract { op: OpType::Retract, e, a, v });
     }
 
 //     fn retract<E, V>(&mut self, e: E, a: KnownEntid, v: V) -> Result<()>
