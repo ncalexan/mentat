@@ -117,6 +117,13 @@ impl Store {
 }
 
 impl Store {
+    pub fn fork(&mut self, sqlite: rusqlite::Connection) -> Result<Store> {
+        Ok(Store {
+            conn: self.conn.clone(),
+            sqlite: sqlite,
+        })
+    }
+
     pub fn dismantle(self) -> (rusqlite::Connection, Conn) {
         (self.sqlite, self.conn)
     }
