@@ -1275,6 +1275,12 @@ mod tests {
     }
 
     #[test]
+    fn test_file() {
+        let mut conn = new_connection("temp.db").expect("Couldn't open file db");
+        let db = ensure_current_version(&mut conn).expect("current version");
+    }
+
+    #[test]
     fn test_add() {
         let mut conn = TestConn::default();
 

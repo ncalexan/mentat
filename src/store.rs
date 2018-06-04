@@ -117,14 +117,8 @@ impl Stores {
     pub fn open_store<T>(path: T) -> Result<Store> where T: AsRef<Path> {
         let path_ref = path.as_ref();
         let path_string = path_ref.to_string_lossy();
-        let (name, cannonical) = if path_string.len() > 0 {
-            let cannonical = path_ref.canonicalize()?;
-            let name: String = cannonical.to_string_lossy().into();
-            (name, cannonical)
-        } else {
-            (path_string.into(), path_ref.to_path_buf())
-        };
-        Stores::singleton().write().unwrap().open(&name, cannonical)
+
+        Stores::singleton().write().unwrap().open(&path_string, path_ref.to_path_buf())
     }
 
     pub fn open_named_in_memory_store(name: &str) -> Result<Store> {
@@ -1035,5 +1029,39 @@ mod tests {
                 ]"#).expect("transact");
             in_progress.commit().expect("commit");
         }
+    }
+
+    #[test]
+    fn test_stores_thread_1() {
+        let path = "test.db";
+
+        let store0 = Stores::open_store(path).expect("Expected a store to be opened");
+        assert_eq!(1, Arc::strong_count(store0.conn()));
+
+        let _ = ::std::thread::spawn(move || -> () {
+            let mut store1 = Stores::open_store(path).expect("Expected a store to be opened in thread");
+
+            // This seems wrong.  Shouldn't this be two, since we have the test thread and the spawn
+            // thread, each with a `Store` that references this connection?
+            assert_eq!(1,  Arc::strong_count(store1.conn()));
+
+            { // Scoped borrow of store1.
+                let mut in_progress = store1.begin_transaction().expect("begun");
+                in_progress.transact(r#"[
+                    {:db/ident       :foo/bar
+                     :db/cardinality :db.cardinality/one
+                     :db/index       true
+                     :db/unique      :db.unique/identity
+                     :db/valueType   :db.type/long}]"#).expect("transact");
+
+                in_progress.commit().expect("commit");
+            }
+
+            assert!(store1.conn().current_schema().attribute_for_ident(&Keyword::namespaced("foo", "bar")).is_some());
+        }).join();
+
+        // This is definitely wrong -- the whole point is that the shared `Conn` needs to be
+        // advanced by transactions in either thread.
+        assert!(store0.conn().current_schema().attribute_for_ident(&Keyword::namespaced("foo", "bar")).is_none());
     }
 }
