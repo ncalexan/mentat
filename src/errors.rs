@@ -69,4 +69,9 @@ pub enum MentatError {
 
     #[fail(display = "provided value of type {} doesn't match attribute value type {}", _0, _1)]
     ValueTypeMismatch(ValueType, ValueType),
+
+    /// We're just not done yet.  Message that the feature is recognized but not yet
+    /// implemented.
+    #[fail(display = "not yet implemented: {}", _0)]
+    NotYetImplemented(String),
 }
