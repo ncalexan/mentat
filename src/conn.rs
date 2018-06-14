@@ -715,7 +715,7 @@ impl Conn {
     }
 
     /// Take a SQLite transaction.
-    fn begin_transaction_with_behavior<'m, 'conn>(&'m mut self, sqlite: &'conn mut rusqlite::Connection, behavior: TransactionBehavior) -> Result<InProgress<'m, 'conn>> {
+    fn begin_transaction_with_behavior<'m, 'conn>(&'m self, sqlite: &'conn mut rusqlite::Connection, behavior: TransactionBehavior) -> Result<InProgress<'m, 'conn>> {
         let tx = sqlite.transaction_with_behavior(behavior)?;
         let (current_generation, current_partition_map, current_schema, cache_cow) =
         {
@@ -743,13 +743,12 @@ impl Conn {
     }
 
     // Helper to avoid passing connections around.
-    // Make both args mutable so that we can't have parallel access.
-    pub fn begin_read<'m, 'conn>(&'m mut self, sqlite: &'conn mut rusqlite::Connection) -> Result<InProgressRead<'m, 'conn>> {
+    pub fn begin_read<'m, 'conn>(&'m self, sqlite: &'conn mut rusqlite::Connection) -> Result<InProgressRead<'m, 'conn>> {
         self.begin_transaction_with_behavior(sqlite, TransactionBehavior::Deferred)
             .map(InProgressRead)
     }
 
-    pub fn begin_uncached_read<'m, 'conn>(&'m mut self, sqlite: &'conn mut rusqlite::Connection) -> Result<InProgressRead<'m, 'conn>> {
+    pub fn begin_uncached_read<'m, 'conn>(&'m self, sqlite: &'conn mut rusqlite::Connection) -> Result<InProgressRead<'m, 'conn>> {
         self.begin_transaction_with_behavior(sqlite, TransactionBehavior::Deferred)
             .map(|mut ip| {
                 ip.use_caching(false);
@@ -761,20 +760,20 @@ impl Conn {
     /// connections from taking immediate or exclusive transactions. This is appropriate for our
     /// writes and `InProgress`: it means we are ready to write whenever we want to, and nobody else
     /// can start a transaction that's not `DEFERRED`, but we don't need exclusivity yet.
-    pub fn begin_transaction<'m, 'conn>(&'m mut self, sqlite: &'conn mut rusqlite::Connection) -> Result<InProgress<'m, 'conn>> {
+    pub fn begin_transaction<'m, 'conn>(&'m self, sqlite: &'conn mut rusqlite::Connection) -> Result<InProgress<'m, 'conn>> {
         self.begin_transaction_with_behavior(sqlite, TransactionBehavior::Immediate)
     }
 
     /// Transact entities against the Mentat store, using the given connection and the current
     /// metadata.
-    pub fn transact<B>(&mut self,
+    pub fn transact<T>(&self,
                     sqlite: &mut rusqlite::Connection,
-                    transaction: B) -> Result<TxReport> where B: Borrow<str> {
+                    transaction: T) -> Result<TxReport> where T: AsRef<str> {
         // Parse outside the SQL transaction. This is a tradeoff: we are limiting the scope of the
         // transaction, and indeed we don't even create a SQL transaction if the provided input is
         // invalid, but it means SQLite errors won't be found until the parse is complete, and if
         // there's a race for the database (don't do that!) we are less likely to win it.
-        let entities = edn::parse::entities(transaction.borrow())?;
+        let entities = edn::parse::entities(transaction.as_ref())?;
 
         let mut in_progress = self.begin_transaction(sqlite)?;
         let report = in_progress.transact_entities(entities)?;
@@ -788,7 +787,7 @@ impl Conn {
     /// `cache_action` determines if the attribute should be added or removed from the cache.
     /// CacheAction::Add is idempotent - each attribute is only added once.
     /// CacheAction::Remove throws an error if the attribute does not currently exist in the cache.
-    pub fn cache(&mut self,
+    pub fn cache(&self,
                  sqlite: &mut rusqlite::Connection,
                  schema: &Schema,
                  attribute: &Keyword,
@@ -820,11 +819,11 @@ impl Conn {
         }
     }
 
-    pub fn register_observer(&mut self, key: String, observer: Arc<TxObserver>) {
+    pub fn register_observer(&self, key: String, observer: Arc<TxObserver>) {
         self.tx_observer_service.lock().unwrap().register(key, observer);
     }
 
-    pub fn unregister_observer(&mut self, key: &String) {
+    pub fn unregister_observer(&self, key: &String) {
         self.tx_observer_service.lock().unwrap().deregister(key);
     }
 }
