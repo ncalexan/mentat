@@ -1397,7 +1397,6 @@ pub fn time_password_changed<Q>(queryable: &Q, uuid: SyncGuid) -> mentat::errors
             None => {
                 None
             },
-            _ => bail!("bad query in find_sync_password_by_uuid"),
         }
     };
 
@@ -1909,6 +1908,13 @@ pub fn find_frequent_sync_passwords(queryable: &mut Store,
 fn delete_by_sync_uuid(in_progress: &mut InProgress,
                        uuid: SyncGuid)
                        -> mentat::errors::Result<()> {
+    delete_by_sync_uuids(in_progress, ::std::iter::once(uuid))
+}
+
+fn delete_by_sync_uuids<I>(in_progress: &mut InProgress,
+                           uuids: I)
+                           -> mentat::errors::Result<()>
+where I: IntoIterator<Item=SyncGuid> {
 
     // Need to delete Sync data, credential data, form data, and usage data.  So version of
     // `:db/retractEntity` is looking pretty good right now!
@@ -1937,24 +1943,25 @@ fn delete_by_sync_uuid(in_progress: &mut InProgress,
    [?e ?a ?v]))
 ]"#;
 
-
-    let results = in_progress.q_once(q, QueryInputs::with_value_sequence(vec![(var!(?uuid), TypedValue::typed_string(uuid))]))?.results;
-
     let mut builder = Builder::<TypedValue>::new();
 
-    match results {
-        QueryResults::Rel(vals) => {
-            vals.into_iter().for_each(|vs| {
-                println!("{:?}", vs);
-                match (vs.len(), vs.get(0), vs.get(1), vs.get(2)) {
-                    (3, Some(&Binding::Scalar(TypedValue::Ref(e))), Some(&Binding::Scalar(TypedValue::Ref(a))), Some(&Binding::Scalar(ref v))) => {
-                        builder.retract(e, a, v.clone()); // TODO: don't clone.
+    for uuid in uuids {
+        let inputs = QueryInputs::with_value_sequence(vec![(var!(?uuid), TypedValue::typed_string(uuid))]);
+        let results = in_progress.q_once(q, inputs)?.results;
+
+        match results {
+            QueryResults::Rel(vals) => {
+                vals.into_iter().for_each(|vs| {
+                    match (vs.len(), vs.get(0), vs.get(1), vs.get(2)) {
+                        (3, Some(&Binding::Scalar(TypedValue::Ref(e))), Some(&Binding::Scalar(TypedValue::Ref(a))), Some(&Binding::Scalar(ref v))) => {
+                            builder.retract(e, a, v.clone()); // TODO: don't clone.
+                        }
+                        _ => unreachable!("bad query result types in delete_by_sync_uuid"),
                     }
-                    _ => unreachable!("bad query result types in delete_by_sync_uuid"),
-                }
-            });
-        },
-        _ => unreachable!("bad query in find_sync_password_by_content"),
+                });
+            },
+            _ => unreachable!("bad query in find_sync_password_by_content"),
+        }
     }
 
     in_progress.transact_entity_builder(builder).and(Ok(()))
@@ -1968,7 +1975,7 @@ mod tests {
 
     use chrono;
 
-    use mentat_db::debug;
+    // use mentat_db::debug;
 
     use mentat::vocabulary::{
         VersionedStore,
@@ -2247,8 +2254,6 @@ mod tests {
 
     #[test]
     fn test_delete_by_sync_uuid() {
-        env_logger::init();
-
         let mut store = testing_store();
 
         // Scoped borrow of `store`.
@@ -2281,6 +2286,40 @@ mod tests {
             let sp = get_sync_password(&in_progress,
                                        LOGIN2.uuid.clone()).expect("to get_sync_password");
             assert_eq!(sp, Some(LOGIN2.clone()));
+        }
+    }
+
+    #[test]
+    fn test_delete_by_sync_uuids() {
+        env_logger::init();
+
+        let mut store = testing_store();
+
+        // Scoped borrow of `store`.
+        {
+            let mut in_progress = store.begin_transaction().expect("begun successfully");
+
+            apply_changed_login(&mut in_progress, LOGIN1.clone()).expect("to apply");
+            apply_changed_login(&mut in_progress, LOGIN2.clone()).expect("to apply");
+
+            let iters = ::std::iter::once(LOGIN1.uuid.clone()).chain(::std::iter::once(LOGIN2.uuid.clone()));
+            delete_by_sync_uuids(&mut in_progress, iters.clone()).expect("to delete by sync uuids");
+
+            // The record's gone.
+            let sp = get_sync_password(&in_progress,
+                                       LOGIN1.uuid.clone()).expect("to get_sync_password");
+            assert_eq!(sp, None);
+
+            let sp = get_sync_password(&in_progress,
+                                       LOGIN2.uuid.clone()).expect("to get_sync_password");
+            assert_eq!(sp, None);
+
+            // And moreover, we won't try to upload a tombstone.
+            let sp = get_deleted_sync_password_uuids_to_upload(&in_progress).expect("to get_sync_password");
+            assert_eq!(sp, vec![]);
+
+            // If we try to delete again, that's okay.
+            delete_by_sync_uuids(&mut in_progress, iters.clone()).expect("to delete by sync uuid");
         }
     }
 
