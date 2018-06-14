@@ -425,7 +425,7 @@ mod testing {
 
         // Now try to add them to a real store.
         let mut sqlite = mentat_db::db::new_connection("").unwrap();
-        let mut conn = Conn::connect(&mut sqlite).unwrap();
+        let conn = Conn::connect(&mut sqlite).unwrap();
         let mut in_progress = conn.begin_transaction(&mut sqlite).expect("begun successfully");
 
         // This should fail: unrecognized entid.
@@ -439,7 +439,7 @@ mod testing {
     #[test]
     fn test_in_progress_builder() {
         let mut sqlite = mentat_db::db::new_connection("").unwrap();
-        let mut conn = Conn::connect(&mut sqlite).unwrap();
+        let conn = Conn::connect(&mut sqlite).unwrap();
 
         // Give ourselves a schema to work with!
         conn.transact(&mut sqlite, r#"[
@@ -471,7 +471,7 @@ mod testing {
     #[test]
     fn test_entity_builder() {
         let mut sqlite = mentat_db::db::new_connection("").unwrap();
-        let mut conn = Conn::connect(&mut sqlite).unwrap();
+        let conn = Conn::connect(&mut sqlite).unwrap();
 
         let foo_one = kw!(:foo/one);
         let foo_many = kw!(:foo/many);

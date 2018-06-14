@@ -98,7 +98,7 @@ lazy_static! {
 }
 
 // Do some work with the appropriate level of paranoia for a shared system.
-fn be_paranoid(conn: &mut Conn, sqlite: &mut rusqlite::Connection, name: TypedValue, moment: TypedValue) {
+fn be_paranoid(conn: &Conn, sqlite: &mut rusqlite::Connection, name: TypedValue, moment: TypedValue) {
     let mut in_progress = conn.begin_transaction(sqlite).expect("begun successfully");
     assert!(in_progress.verify_core_schema().is_ok());
     assert!(in_progress.ensure_vocabulary(&FOO_VOCAB).is_ok());
@@ -116,14 +116,14 @@ fn be_paranoid(conn: &mut Conn, sqlite: &mut rusqlite::Connection, name: TypedVa
 #[test]
 fn test_real_world() {
     let mut sqlite = mentat_db::db::new_connection("").unwrap();
-    let mut conn = Conn::connect(&mut sqlite).unwrap();
+    let conn = Conn::connect(&mut sqlite).unwrap();
 
     let alice: TypedValue = TypedValue::typed_string("Alice");
     let barbara: TypedValue = TypedValue::typed_string("Barbara");
     let now: TypedValue = TypedValue::current_instant();
 
-    be_paranoid(&mut conn, &mut sqlite, alice.clone(), now.clone());
-    be_paranoid(&mut conn, &mut sqlite, barbara.clone(), now.clone());
+    be_paranoid(&conn, &mut sqlite, alice.clone(), now.clone());
+    be_paranoid(&conn, &mut sqlite, barbara.clone(), now.clone());
 
     let results = conn.q_once(&mut sqlite, r#"[:find ?name ?when
                                                :order (asc ?name)
@@ -184,7 +184,7 @@ fn test_add_vocab() {
     let foo_v1_b = vocabulary::Definition::new(kw!(:org.mozilla/foo), 1, bar_and_baz.clone());
 
     let mut sqlite = mentat_db::db::new_connection("").unwrap();
-    let mut conn = Conn::connect(&mut sqlite).unwrap();
+    let conn = Conn::connect(&mut sqlite).unwrap();
 
     let foo_version_query = r#"[:find [?version ?aa]
                                 :where

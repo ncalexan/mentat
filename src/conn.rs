@@ -860,7 +860,7 @@ mod tests {
     #[test]
     fn test_transact_does_not_collide_existing_entids() {
         let mut sqlite = db::new_connection("").unwrap();
-        let mut conn = Conn::connect(&mut sqlite).unwrap();
+        let conn = Conn::connect(&mut sqlite).unwrap();
 
         // Let's find out the next ID that'll be allocated. We're going to try to collide with it
         // a bit later.
@@ -886,7 +886,7 @@ mod tests {
     #[test]
     fn test_transact_does_not_collide_new_entids() {
         let mut sqlite = db::new_connection("").unwrap();
-        let mut conn = Conn::connect(&mut sqlite).unwrap();
+        let conn = Conn::connect(&mut sqlite).unwrap();
 
         // Let's find out the next ID that'll be allocated. We're going to try to collide with it.
         let next = conn.metadata.lock().expect("metadata").partition_map[":db.part/user"].index;
@@ -920,7 +920,7 @@ mod tests {
     #[test]
     fn test_compound_transact() {
         let mut sqlite = db::new_connection("").unwrap();
-        let mut conn = Conn::connect(&mut sqlite).unwrap();
+        let conn = Conn::connect(&mut sqlite).unwrap();
 
         let tempid_offset = get_next_entid(&conn);
 
@@ -961,7 +961,7 @@ mod tests {
     #[test]
     fn test_simple_prepared_query() {
         let mut c = db::new_connection("").expect("Couldn't open conn.");
-        let mut conn = Conn::connect(&mut c).expect("Couldn't open DB.");
+        let conn = Conn::connect(&mut c).expect("Couldn't open DB.");
         conn.transact(&mut c, r#"[
             [:db/add "s" :db/ident :foo/boolean]
             [:db/add "s" :db/valueType :db.type/boolean]
@@ -998,7 +998,7 @@ mod tests {
     #[test]
     fn test_compound_rollback() {
         let mut sqlite = db::new_connection("").unwrap();
-        let mut conn = Conn::connect(&mut sqlite).unwrap();
+        let conn = Conn::connect(&mut sqlite).unwrap();
 
         let tempid_offset = get_next_entid(&conn);
 
@@ -1048,7 +1048,7 @@ mod tests {
     #[test]
     fn test_transact_errors() {
         let mut sqlite = db::new_connection("").unwrap();
-        let mut conn = Conn::connect(&mut sqlite).unwrap();
+        let conn = Conn::connect(&mut sqlite).unwrap();
 
         // Good: empty transaction.
         let report = conn.transact(&mut sqlite, "[]").unwrap();
@@ -1088,7 +1088,7 @@ mod tests {
     #[test]
     fn test_add_to_cache_failure_no_attribute() {
         let mut sqlite = db::new_connection("").unwrap();
-        let mut conn = Conn::connect(&mut sqlite).unwrap();
+        let conn = Conn::connect(&mut sqlite).unwrap();
         let _report = conn.transact(&mut sqlite, r#"[
             {  :db/ident       :foo/bar
                :db/valueType   :db.type/long },
@@ -1109,7 +1109,7 @@ mod tests {
     fn test_lookup_attribute_with_caching() {
 
         let mut sqlite = db::new_connection("").unwrap();
-        let mut conn = Conn::connect(&mut sqlite).unwrap();
+        let conn = Conn::connect(&mut sqlite).unwrap();
         let _report = conn.transact(&mut sqlite, r#"[
             {  :db/ident       :foo/bar
                :db/valueType   :db.type/long },
@@ -1168,7 +1168,7 @@ mod tests {
     #[test]
     fn test_cache_usage() {
         let mut sqlite = db::new_connection("").unwrap();
-        let mut conn = Conn::connect(&mut sqlite).unwrap();
+        let conn = Conn::connect(&mut sqlite).unwrap();
 
         let db_ident = (*conn.current_schema()).get_entid(&kw!(:db/ident)).expect("db_ident").0;
         let db_type = (*conn.current_schema()).get_entid(&kw!(:db/valueType)).expect("db_ident").0;
