@@ -12,6 +12,21 @@ use mentat_core::util::Either;
 
 pub use edn::{FromMicros, ToMicros /* Utc, */};
 
+use mentat;
+use mentat::{
+    Binding,
+    Keyword,
+    QueryInputs,
+    QueryResults,
+    Queryable,
+    Store,
+};
+
+use mentat::conn::{
+    Dumpable,
+    InProgress,
+};
+
 use mentat_core;
 use mentat_core::{
     Cloned,
@@ -23,22 +38,9 @@ use mentat_core::{
     ValueType,
 };
 
-use mentat;
-use mentat::{
-    Binding,
-    Keyword,
-    QueryInputs,
-    QueryResults,
-    Queryable,
-    Store,
-};
+use mentat_db;
 
 use mentat::query_builder::QueryBuilder;
-
-use mentat::conn::{
-    Dumpable,
-    InProgress,
-};
 
 use edn::entity_builder::{
     BuildEntities,
@@ -513,23 +515,18 @@ fn find_sync_password_credential_and_form
 
 // TODO: Into<Option<DateTime<Utc>>>.
 fn touch_by_id(builder: &mut Builder<TypedValue>,
-               id: String,
+               id: CredentialId,
                at: Option<DateTime<Utc>>)
                -> mentat::errors::Result<()> {
-    let c = Builder::tempid("c");
     let l = Builder::tempid("l");
 
-    // Upsert to find credential.
-    builder.add(c.clone(),
-                CREDENTIAL_ID.clone(),
-                TypedValue::String(id.into()));
     // New login.
     builder.add(l.clone(),
                 LOGIN_AT.clone(),
                 TypedValue::Instant(at.unwrap_or_else(|| mentat_core::now())));
     builder.add(l.clone(),
                 LOGIN_CREDENTIAL.clone(),
-                TypedValue::typed_string("c")); // XXX
+                Builder::lookup_ref(CREDENTIAL_ID.clone(), TypedValue::typed_string(id)));
 
     Ok(())
 }
@@ -934,7 +931,7 @@ where Q: Queryable + Dumpable {
                 password_field,
                 time_created,
                 time_password_changed: time_password_changed(queryable, id.clone())?.expect("time_password_changed"),
-                time_last_used: time_last_used(queryable, cid.0.clone())?,
+                time_last_used: time_last_used(queryable, cid.clone())?,
                 times_used: times_used(queryable, cid.clone())? as usize,
             }))
         },
@@ -1193,7 +1190,7 @@ pub fn times_used<Q>(queryable: &Q, id: CredentialId) -> mentat::errors::Result<
 use chrono::TimeZone;
 
 // TODO: u64.
-pub fn time_last_used<Q>(queryable: &Q, id: String) -> mentat::errors::Result<DateTime<Utc>>
+pub fn time_last_used<Q>(queryable: &Q, id: CredentialId) -> mentat::errors::Result<DateTime<Utc>>
     where Q: Queryable
 {
     // TODO: this will be much easier to express with the pull API, tracked by
@@ -1230,7 +1227,7 @@ pub fn time_last_used<Q>(queryable: &Q, id: String) -> mentat::errors::Result<Da
                 [?sl :sync.password/metadataTx ?tx]
                ]"#;
 
-        let sync_mirror: mentat::errors::Result<_> = match queryable.q_once(q, QueryInputs::with_value_sequence(vec![(var!(?id), TypedValue::String(id.clone().into()))]))?.into_tuple()? {
+        let sync_mirror: mentat::errors::Result<_> = match queryable.q_once(q, QueryInputs::with_value_sequence(vec![(var!(?id), TypedValue::typed_string(id.clone()))]))?.into_tuple()? {
             Some(vs) => {
                 match (vs.len(), vs.get(0), vs.get(1), vs.get(2)) {
                     (3, Some(&Binding::Scalar(TypedValue::Ref(sl))), Some(&Binding::Scalar(TypedValue::Instant(ref time_last_used))), Some(&Binding::Scalar(TypedValue::Ref(tx)))) => {
@@ -1273,7 +1270,7 @@ pub fn time_last_used<Q>(queryable: &Q, id: String) -> mentat::errors::Result<Da
     };
 
     let values =
-        QueryInputs::with_value_sequence(vec![(var!(?id), TypedValue::String(id.clone().into())),
+        QueryInputs::with_value_sequence(vec![(var!(?id), TypedValue::typed_string(id)),
                                               (var!(?sync_tx), TypedValue::Ref(sync_tx))]);
 
     info!("time_last_used: values: {:?}", values);
@@ -1406,11 +1403,11 @@ pub fn time_password_changed<Q>(queryable: &Q, uuid: SyncGuid) -> mentat::errors
     is.push(remote_time_password_changed);
 
     match local_time_password_changed {
-        Some((materialTx, utx, utxi, ptx, ptxi)) => {
-            if utx > materialTx {
+        Some((material_tx, utx, utxi, ptx, ptxi)) => {
+            if utx > material_tx {
                 is.push(utxi);
             }
-            if ptx > materialTx {
+            if ptx > material_tx {
                 is.push(ptxi);
             }
         },
@@ -1460,23 +1457,54 @@ pub fn get_deleted_sync_password_uuids_to_upload<Q>(queryable: &Q) -> mentat::er
     deleted_uuids
 }
 
-pub fn get_modified_sync_password_uuids_to_upload<Q>(queryable: &Q, last_sync_tx: KnownEntid) -> mentat::errors::Result<Vec<SyncGuid>>
+pub fn reset_client(in_progress: &mut InProgress) -> mentat::errors::Result<()> {
+    // Need to delete Sync data, credential data, form data, and usage data.  So version of
+    // `:db/retractEntity` is looking pretty good right now!
+    let q = r#"[
+:find
+ [?e ...]
+:where
+ [?e :sync.password/uuid _]
+]"#;
+
+    let tx = TypedValue::Ref(mentat_db::TX0);
+
+    let mut builder = Builder::<TypedValue>::new();
+
+    let results = in_progress.q_once(q, None)?.results;
+
+    match results {
+        QueryResults::Coll(es) => {
+            for e in es {
+                match e {
+                    Binding::Scalar(TypedValue::Ref(e)) => {
+                        builder.add(e, SYNC_PASSWORD_MATERIAL_TX.clone(), tx.clone());
+                        builder.add(e, SYNC_PASSWORD_METADATA_TX.clone(), tx.clone());
+                    },
+                    _ => unreachable!("bad query in find_sync_password_by_content"),
+                }
+            }
+        },
+        _ => unreachable!("bad query in find_sync_password_by_content"),
+    }
+
+    in_progress.transact_entity_builder(builder).and(Ok(()))
+}
+
+pub fn get_modified_sync_password_uuids_to_upload<Q>(queryable: &Q) -> mentat::errors::Result<Vec<SyncGuid>>
     where Q: Queryable
 {
     let modified = {
         let q = r#"[:find
                 ;(max ?txI) ; Useful for debugging.
                 [?uuid ...]
-                :in
-                ?syncTx
                 :order
                 ?uuid ; TODO: don't order?
                 :with
                 ?sp
                 :where
                 [?sp :sync.password/uuid ?uuid]
-                ;[?sp :sync.password/materialTx ?materialTx]
-                ;[(tx-after ?materialTx ?syncTx)]
+                [?sp :sync.password/materialTx ?materialTx]
 
                 (or-join [?sp ?a ?tx]
                  (and
@@ -1488,16 +1516,11 @@ pub fn get_modified_sync_password_uuids_to_upload<Q>(queryable: &Q, last_sync_tx
                   [?f ?a _ ?tx]
                   [(ground [:form/hostname :form/usernameField :form/passwordField :form/submitUrl :form/httpRealm]) [?a ...]]))
 
-               [(tx-after ?tx ?syncTx)]
+                [(tx-after ?tx ?materialTx)]
                ;[?tx :db/txInstant ?txI] ; Useful for debugging.
-
                ]"#;
 
-        let output = queryable.q_once(
-            q,
-            QueryInputs::with_value_sequence(vec![(var!(?syncTx), last_sync_tx.into())]))?;
-
-        output
+        queryable.q_once(q, None)?
             .into_coll()?
             .into_iter()
             .map(|b| { b
@@ -1967,6 +1990,43 @@ where I: IntoIterator<Item=SyncGuid> {
     in_progress.transact_entity_builder(builder).and(Ok(()))
 }
 
+fn mark_synced_by_sync_uuids<I>(
+    in_progress: &mut InProgress,
+    uuids: I)
+    -> mentat::errors::Result<()>
+where I: IntoIterator<Item=SyncGuid> {
+
+    // Need to delete Sync data, credential data, form data, and usage data.  So version of
+    // `:db/retractEntity` is looking pretty good right now!
+    let q = r#"[
+:find
+ ?e .
+:in
+ ?uuid
+:where
+ [?e :sync.password/uuid ?uuid]
+]"#;
+
+    let tx = TypedValue::Ref(in_progress.last_tx_id());
+
+    let mut builder = Builder::<TypedValue>::new();
+
+    for uuid in uuids {
+        let inputs = QueryInputs::with_value_sequence(vec![(var!(?uuid), TypedValue::typed_string(uuid))]);
+        let results = in_progress.q_once(q, inputs)?.results;
+
+        match results {
+            QueryResults::Scalar(Some(Binding::Scalar(TypedValue::Ref(e)))) => {
+                builder.add(e, SYNC_PASSWORD_MATERIAL_TX.clone(), tx.clone()); // TODO: don't clone.
+                builder.add(e, SYNC_PASSWORD_METADATA_TX.clone(), tx.clone()); // TODO: don't clone.
+            },
+            _ => unreachable!("bad query in mark_synced_by_sync_uuids"),
+        }
+    }
+
+    in_progress.transact_entity_builder(builder).and(Ok(()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1974,8 +2034,6 @@ mod tests {
     extern crate env_logger;
 
     use chrono;
-
-    // use mentat_db::debug;
 
     use mentat::vocabulary::{
         VersionedStore,
@@ -2164,15 +2222,8 @@ mod tests {
             apply_changed_login(&mut in_progress, LOGIN1.clone()).expect("to apply");
             apply_changed_login(&mut in_progress, LOGIN2.clone()).expect("to apply");
 
-            let last_tx_id = in_progress.last_tx_id();
-
-            // Suppose we disconnect, so that the last sync tx is TX0, and then reconnect.  We'll
-            // have Sync 1.5 data in the store, and we'll need to upload it all.
-            let sp = get_modified_sync_password_uuids_to_upload(&in_progress, KnownEntid(0)).expect("to get_sync_password");
-            assert_eq!(sp, vec![LOGIN1.uuid.clone(), LOGIN2.uuid.clone()]);
-
             // But if there are no local changes, we shouldn't propose any records to re-upload.
-            let sp = get_modified_sync_password_uuids_to_upload(&in_progress, KnownEntid(last_tx_id)).expect("to get_sync_password");
+            let sp = get_modified_sync_password_uuids_to_upload(&in_progress).expect("to get_sync_password");
             assert_eq!(sp, vec![]);
 
             // Now, let's modify locally an existing credential connected to a Sync 1.5 record.
@@ -2190,8 +2241,15 @@ mod tests {
             assert_eq!(t.into_vector().expect("vector").len(), 5); // One add and one retract per field, and the :db/txInstant.
 
             // Our local change results in a record needing to be uploaded remotely.
-            let sp = get_modified_sync_password_uuids_to_upload(&in_progress, KnownEntid(last_tx_id)).expect("to get_sync_password");
+            let sp = get_modified_sync_password_uuids_to_upload(&in_progress).expect("to get_sync_password");
             assert_eq!(sp, vec![LOGIN1.uuid.clone()]);
+
+            // Suppose we disconnect, so that the last sync tx is TX0, and then reconnect.  We'll
+            // have Sync 1.5 data in the store, and we'll need to upload it all.
+            reset_client(&mut in_progress).expect("to reset_client");
+
+            let sp = get_modified_sync_password_uuids_to_upload(&in_progress).expect("to get_sync_password");
+            assert_eq!(sp, vec![LOGIN1.uuid.clone(), LOGIN2.uuid.clone()]);
         }
     }
 
@@ -2207,8 +2265,6 @@ mod tests {
 
             apply_changed_login(&mut in_progress, LOGIN1.clone()).expect("to apply");
             apply_changed_login(&mut in_progress, LOGIN2.clone()).expect("to apply");
-
-            let last_tx_id = in_progress.last_tx_id();
 
             // Deletion is a global operation in our Sync 1.5 data model, meaning that we don't take
             // into account the current Sync tx when determining if something has been deleted:
@@ -2253,6 +2309,54 @@ mod tests {
     }
 
     #[test]
+    fn test_mark_synced_by_sync_uuids() {
+        env_logger::init();
+
+        let mut store = testing_store();
+
+        // Scoped borrow of `store`.
+        {
+            let mut in_progress = store.begin_transaction().expect("begun successfully");
+
+            apply_changed_login(&mut in_progress, LOGIN1.clone()).expect("to apply");
+            apply_changed_login(&mut in_progress, LOGIN2.clone()).expect("to apply");
+
+            in_progress.commit().expect("commit succeeded");
+        }
+
+        // Scoped borrow of `store`.
+        {
+            let mut in_progress = store.begin_transaction().expect("begun successfully");
+
+            let sp = get_modified_sync_password_uuids_to_upload(&in_progress).expect("to get_sync_password");
+            assert_eq!(sp, vec![]);
+
+            // Suppose we disconnect, so that the last sync tx is TX0, and then reconnect.  We'll
+            // have Sync 1.5 data in the store, and we'll need to upload it all.
+            reset_client(&mut in_progress).expect("to reset_client");
+
+            let sp = get_modified_sync_password_uuids_to_upload(&in_progress).expect("to get_sync_password");
+            assert_eq!(sp, vec![LOGIN1.uuid.clone(), LOGIN2.uuid.clone()]);
+
+            // Mark one password synced, and the other one will need to be uploaded.
+            let iters = ::std::iter::once(LOGIN1.uuid.clone());
+            mark_synced_by_sync_uuids(&mut in_progress, iters.clone()).expect("to mark synced by sync uuids");
+
+            let sp = get_modified_sync_password_uuids_to_upload(&in_progress).expect("to get_sync_password");
+            assert_eq!(sp, vec![LOGIN2.uuid.clone()]);
+
+            // Mark everything unsynced, and then everything synced, and we won't upload anything.
+            reset_client(&mut in_progress).expect("to reset_client");
+
+            let iters = ::std::iter::once(LOGIN1.uuid.clone()).chain(::std::iter::once(LOGIN2.uuid.clone()));
+            mark_synced_by_sync_uuids(&mut in_progress, iters.clone()).expect("to mark synced by sync uuids");
+
+            let sp = get_modified_sync_password_uuids_to_upload(&in_progress).expect("to get_sync_password");
+            assert_eq!(sp, vec![]);
+        }
+    }
+
+    #[test]
     fn test_delete_by_sync_uuid() {
         let mut store = testing_store();
 
@@ -2291,8 +2395,6 @@ mod tests {
 
     #[test]
     fn test_delete_by_sync_uuids() {
-        env_logger::init();
-
         let mut store = testing_store();
 
         // Scoped borrow of `store`.
@@ -2325,6 +2427,8 @@ mod tests {
 
     #[test]
     fn test_lockbox_logins() {
+        let cid = CredentialId("id1".to_string());
+
         let mut store = Store::open("").expect("opened");
 
         // Scoped borrow of `store`.
@@ -2348,7 +2452,7 @@ mod tests {
             let mut builder = Builder::<TypedValue>::new();
 
             add_credential(&mut builder,
-                           CredentialId("id1".to_string()),
+                           cid.clone(),
                            Some("user1".to_string()),
                            "pass1".to_string(),
                            None)
@@ -2362,7 +2466,7 @@ mod tests {
             let mut in_progress = store.begin_transaction().expect("begun successfully");
             let mut builder = Builder::<TypedValue>::new();
 
-            touch_by_id(&mut builder, "id1".to_string(), Some(Utc.timestamp(1, 0))).expect("to touch id1 1");
+            touch_by_id(&mut builder, cid.clone(), Some(Utc.timestamp(1, 0))).expect("to touch id1 1");
 
             in_progress.transact_entity_builder(builder).expect("to transact");
             in_progress.commit().expect("to commit");
@@ -2383,7 +2487,7 @@ mod tests {
             let mut in_progress = store.begin_transaction().expect("begun successfully");
             let mut builder = Builder::<TypedValue>::new();
 
-            touch_by_id(&mut builder, "id1".to_string(), Some(Utc.timestamp(3, 0))).expect("to touch id1 2");
+            touch_by_id(&mut builder, cid.clone(), Some(Utc.timestamp(3, 0))).expect("to touch id1 2");
 
             in_progress.transact_entity_builder(builder).expect("to transact");
             in_progress.commit().expect("to commit");
@@ -2393,9 +2497,9 @@ mod tests {
         {
             let in_progress = store.begin_read().expect("begun successfully");
 
-            assert_eq!(2, times_used(&in_progress, CredentialId("id1".to_string())).expect("to fetch local_times_used"));
-            assert_eq!(Utc.timestamp(3, 0), time_last_used(&in_progress, "id1".to_string()).expect("to fetch local_times_used"));
-            assert_eq!(vec![CredentialId("id1".to_string())], new_credential_ids(&in_progress).expect("to fetch new_credentials_ids"));
+            assert_eq!(2, times_used(&in_progress, cid.clone()).expect("to fetch local_times_used"));
+            assert_eq!(Utc.timestamp(3, 0), time_last_used(&in_progress, cid.clone()).expect("to fetch local_times_used"));
+            assert_eq!(vec![cid.clone()], new_credential_ids(&in_progress).expect("to fetch new_credentials_ids"));
             assert_eq!(Vec::<SyncGuid>::new(), get_deleted_sync_password_uuids_to_upload(&in_progress).expect("to fetch get_deleted_sync_password_uuids_to_upload"));
         }
 
@@ -2414,9 +2518,9 @@ mod tests {
             in_progress.transact(x).expect("to transact 1");
 
             // 3 remote visits, 2 local visits after the given :sync.password/tx.
-            assert_eq!(5, times_used(&in_progress, CredentialId("id1".to_string())).expect("to fetch local_times_used + remote_times_used"));
+            assert_eq!(5, times_used(&in_progress, cid.clone()).expect("to fetch local_times_used + remote_times_used"));
             // Remote lastUsed is after all of our local usages.
-            assert_eq!(Utc.timestamp(5, 0), time_last_used(&in_progress, "id1".to_string()).expect("to fetch time_last_used"));
+            assert_eq!(Utc.timestamp(5, 0), time_last_used(&in_progress, cid.clone()).expect("to fetch time_last_used"));
             assert_eq!(Vec::<CredentialId>::new(), new_credential_ids(&in_progress).expect("to fetch new_credentials_ids"));
             assert_eq!(Vec::<SyncGuid>::new(), get_deleted_sync_password_uuids_to_upload(&in_progress).expect("to fetch get_deleted_sync_password_uuids_to_upload"));
 
@@ -2437,9 +2541,9 @@ mod tests {
                 .expect("to transact 2");
 
             // 3 remote visits, 1 local visit after the given :sync.password/tx.
-            assert_eq!(4, times_used(&in_progress, CredentialId("id1".to_string())).expect("to fetch local_times_used + remote_times_used"));
+            assert_eq!(4, times_used(&in_progress, cid.clone()).expect("to fetch local_times_used + remote_times_used"));
             // Remote lastUsed is between our local usages, so the latest local usage wins.
-            assert_eq!(Utc.timestamp(3, 0), time_last_used(&in_progress, "id1".to_string()).expect("to fetch time_last_used"));
+            assert_eq!(Utc.timestamp(3, 0), time_last_used(&in_progress, cid.clone()).expect("to fetch time_last_used"));
             assert_eq!(Vec::<CredentialId>::new(), new_credential_ids(&in_progress).expect("to fetch new_credentials_ids"));
             assert_eq!(Vec::<SyncGuid>::new(), get_deleted_sync_password_uuids_to_upload(&in_progress).expect("to fetch get_deleted_sync_password_uuids_to_upload"));
 
