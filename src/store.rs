@@ -614,7 +614,7 @@ mod tests {
                 let mut builder = in_progress.builder().describe_tempid(&name);
                 builder.add_kw(&kw!(:todo/uuid), TypedValue::Uuid(uuid)).expect("Expected added uuid");
                 changeset.insert(uuid_entid.clone());
-                builder.add_kw(&kw!(:todo/name), TypedValue::typed_string(&name)).expect("Expected added name");
+                builder.add_kw(&kw!(:todo/name), TypedValue::typed_string(name)).expect("Expected added name");
                 changeset.insert(name_entid.clone());
                 if i % 2 == 0 {
                     builder.add_kw(&kw!(:todo/completion_date), TypedValue::current_instant()).expect("Expected added date");
@@ -683,7 +683,7 @@ mod tests {
             for i in 0..3 {
                 let name = format!("label{}", i);
                 let mut builder = in_progress.builder().describe_tempid(&name);
-                builder.add_kw(&kw!(:label/name), TypedValue::typed_string(&name)).expect("Expected added name");
+                builder.add_kw(&kw!(:label/name), TypedValue::typed_string(name)).expect("Expected added name");
                 builder.add_kw(&kw!(:label/color), TypedValue::typed_string("blue")).expect("Expected added color");
                 let (ip, _) = builder.transact();
                 in_progress = ip;
