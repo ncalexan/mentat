@@ -873,7 +873,7 @@ pub fn time_sync_password_modified<Q>(queryable: &Q, uuid: SyncGuid) -> mentat::
 pub fn get_sync_password<Q>(queryable: &Q,
                             id: SyncGuid)
                             -> mentat::errors::Result<Option<ServerPassword>>
-where Q: Queryable + Dumpable {
+where Q: Queryable {
     let q = r#"[:find
                 [?c
                  (pull ?c [:credential/id :credential/username :credential/password :credential/createdAt])
@@ -889,8 +889,6 @@ where Q: Queryable + Dumpable {
     let inputs = QueryInputs::with_value_sequence(vec![
         (var!(?uuid), TypedValue::typed_string(&id)),
     ]);
-
-    // debug!("{}", queryable.dump_sql_query("SELECT e, a, v, tx FROM datoms ORDER BY e, a, v, tx", &[]).expect("debug"));
 
     let tuple = queryable.q_once(q, inputs.clone())?.into_tuple()?;
     let server_password = match tuple {
@@ -941,6 +939,38 @@ where Q: Queryable + Dumpable {
     server_password
 }
 
+pub fn get_all_sync_passwords<Q>(queryable: &Q)
+                                 -> mentat::errors::Result<Vec<ServerPassword>>
+where Q: Queryable {
+    let q = r#"[
+:find
+ [?uuid ...]
+:where
+ [_ :sync.password/uuid ?uuid]
+:order
+ (asc ?uuid)
+]"#;
+
+    let uuids: mentat::errors::Result<Vec<_>> = queryable.q_once(q, None)?
+        .into_coll()?
+        .into_iter()
+        .map(|uuid| {
+            match uuid {
+                Binding::Scalar(TypedValue::String(uuid)) => Ok(SyncGuid((*uuid).clone())),
+                _ => bail!("bad query result types in get_all_sync_passwords"),
+            }
+        })
+        .collect();
+    let uuids = uuids?;
+
+    let mut ps = Vec::with_capacity(uuids.len());
+
+    for uuid in uuids {
+        get_sync_password(queryable, uuid)?.map(|p| ps.push(p));
+    }
+
+    Ok(ps)
+}
 
 // ;; This is metadata recording user behavior.
 // [:login/at                  :db.type/instant :db.cardinality/one]
@@ -2097,7 +2127,7 @@ mod tests {
     }
 
     #[test]
-    fn test_roundtrip() {
+    fn test_get_sync_password() {
         // Verify that applying a password and then immediately reading it back yields the original
         // data.
 
@@ -2107,29 +2137,30 @@ mod tests {
         {
             let mut in_progress = store.begin_transaction().expect("begun successfully");
 
-            let login = ServerPassword {
-                modified: DateTime::<Utc>::from_micros(1523908142550),
-                uuid: SyncGuid("{c5144948-fba1-594b-8148-ff70c85ee19a}".into()),
-                hostname: "https://oauth-sync.dev.lcip.org".into(),
-                target: FormTarget::FormSubmitURL("https://oauth-sync.dev.lcip.org/post".into()),
-                username: Some("username@mockmyid.com".into()),
-                password: "password".into(),
-                username_field: Some("email".into()),
-                password_field: None,
-                time_created: DateTime::<Utc>::from_micros(1523908112453),
-                time_password_changed: DateTime::<Utc>::from_micros(1523908112453),
-                time_last_used: DateTime::<Utc>::from_micros(1000),
-                times_used: 12,
-            };
-            // info!("{}", in_progress.dump_sql_query("SELECT e, a, v, tx FROM datoms ORDER BY e, a, v, tx", &[]).expect("debug"));
-
-            apply_changed_login(&mut in_progress, login.clone()).expect("to apply");
-
-            // info!("{}", in_progress.dump_sql_query("SELECT e, a, v, tx FROM datoms ORDER BY e, a, v, tx", &[]).expect("debug"));
+            apply_changed_login(&mut in_progress, LOGIN1.clone()).expect("to apply");
 
             let sp = get_sync_password(&in_progress,
-                                       SyncGuid("{c5144948-fba1-594b-8148-ff70c85ee19a}".into())).expect("to get_sync_password");
-            assert_eq!(sp, Some(login.clone()));
+                                       LOGIN1.uuid.clone()).expect("to get_sync_password");
+            assert_eq!(sp, Some(LOGIN1.clone()));
+        }
+    }
+
+    #[test]
+    fn test_get_all_sync_passwords() {
+        // Verify that applying passwords and then immediately reading them all back yields the
+        // original data.
+
+        let mut store = testing_store();
+
+        // Scoped borrow of `store`.
+        {
+            let mut in_progress = store.begin_transaction().expect("begun successfully");
+
+            apply_changed_login(&mut in_progress, LOGIN1.clone()).expect("to apply 1");
+            apply_changed_login(&mut in_progress, LOGIN2.clone()).expect("to apply 2");
+
+            let sps = get_all_sync_passwords(&in_progress).expect("to get_all_sync_passwords");
+            assert_eq!(sps, vec![LOGIN1.clone(), LOGIN2.clone()]);
         }
     }
 
@@ -2143,23 +2174,9 @@ mod tests {
         {
             let mut in_progress = store.begin_transaction().expect("begun successfully");
 
-            let login = ServerPassword {
-                modified: DateTime::<Utc>::from_micros(1523908142550),
-                uuid: SyncGuid("{c5144948-fba1-594b-8148-ff70c85ee19a}".into()),
-                hostname: "https://oauth-sync.dev.lcip.org".into(),
-                target: FormTarget::FormSubmitURL("https://oauth-sync.dev.lcip.org/post".into()),
-                username: Some("username@mockmyid.com".into()),
-                password: "password".into(),
-                username_field: Some("email".into()),
-                password_field: None,
-                time_created: DateTime::<Utc>::from_micros(1523908112453),
-                time_password_changed: DateTime::<Utc>::from_micros(1523908112453),
-                time_last_used: DateTime::<Utc>::from_micros(1000),
-                times_used: 12,
-            };
-            apply_changed_login(&mut in_progress, login.clone()).expect("to apply");
+            apply_changed_login(&mut in_progress, LOGIN1.clone()).expect("to apply");
 
-            apply_changed_login(&mut in_progress, login.clone()).expect("to apply");
+            apply_changed_login(&mut in_progress, LOGIN1.clone()).expect("to apply");
 
             let t = in_progress.dump_last_transaction().expect("transaction");
             assert_eq!(t.into_vector().expect("vector").len(), 1); // Just the :db/txInstant.
@@ -2177,20 +2194,8 @@ mod tests {
         {
             let mut in_progress = store.begin_transaction().expect("begun successfully");
 
-            let mut login = ServerPassword {
-                modified: DateTime::<Utc>::from_micros(1523908142550),
-                uuid: SyncGuid("{c5144948-fba1-594b-8148-ff70c85ee19a}".into()),
-                hostname: "https://oauth-sync.dev.lcip.org".into(),
-                target: FormTarget::FormSubmitURL("https://oauth-sync.dev.lcip.org/post".into()),
-                username: Some("username@mockmyid.com".into()),
-                password: "password".into(),
-                username_field: Some("email".into()),
-                password_field: None,
-                time_created: DateTime::<Utc>::from_micros(1523908112453),
-                time_password_changed: DateTime::<Utc>::from_micros(1523908112453),
-                time_last_used: DateTime::<Utc>::from_micros(1000),
-                times_used: 12,
-            };
+            let mut login = LOGIN1.clone();
+
             apply_changed_login(&mut in_progress, login.clone()).expect("to apply");
 
             login.modified = mentat_core::now();
@@ -2575,26 +2580,8 @@ mod tests {
             let last_tx = in_progress.last_tx_id();
             // assert_eq!(1, 2);
 
-            let login = ServerPassword {
-                modified: DateTime::<Utc>::from_micros(1523908142550),
-                uuid: SyncGuid("{c5144948-fba1-594b-8148-ff70c85ee19a}".into()),
-                hostname: "https://oauth-sync.dev.lcip.org".into(),
-                target: FormTarget::FormSubmitURL("https://oauth-sync.dev.lcip.org/post".into()),
-                username: Some("username@mockmyid.com".into()),
-                password: "password".into(),
-                username_field: Some("email".into()),
-                password_field: None,
-                time_created: DateTime::<Utc>::from_micros(1523908112453),
-                time_password_changed: DateTime::<Utc>::from_micros(1523908112453),
-                time_last_used: DateTime::<Utc>::from_micros(1000),
-                times_used: 12,
-            };
-            apply_changed_login(&mut in_progress, login).expect("to apply 1");
+            apply_changed_login(&mut in_progress, LOGIN1.clone()).expect("to apply 1");
 
-            // let vs = queryable.q_once(q, None)?.into_edn()?;
-            // assert_eq!("", format!("{:?}", in_progress.dump_datoms_after(last_tx).expect("datoms")));
-
-            // let s = in_progress.dump_sql_query("SELECT e, a, v FROM datoms ORDER BY e, a, v, tx", &[]).expect("debug");
             let s = in_progress.dump_datoms_after(last_tx-1).expect("datoms").to_pretty(120).unwrap();
             println!("last_tx {}:\n{}", last_tx, s);
 
@@ -2606,20 +2593,8 @@ mod tests {
             let mut in_progress = store.begin_transaction().expect("begun successfully");
             let last_tx = in_progress.last_tx_id();
 
-            let mut login = ServerPassword {
-                modified: DateTime::<Utc>::from_micros(1523908142550),
-                uuid: SyncGuid("{c5144948-fba1-594b-8148-ff70c85ee19a}".into()),
-                hostname: "https://oauth-sync.dev.lcip.org".into(),
-                target: FormTarget::FormSubmitURL("https://oauth-sync.dev.lcip.org/post".into()),
-                username: Some("username@mockmyid.com".into()),
-                password: "password".into(),
-                username_field: Some("email".into()),
-                password_field: None,
-                time_created: DateTime::<Utc>::from_micros(1523908112453),
-                time_password_changed: DateTime::<Utc>::from_micros(1523908112453),
-                time_last_used: DateTime::<Utc>::from_micros(1000),
-                times_used: 12,
-            };
+            let mut login = LOGIN1.clone();
+
             login.password = "password2".into();
             login.modified = mentat_core::now() + chrono::Duration::seconds(1);
             apply_changed_login(&mut in_progress, login).expect("to apply 2");
@@ -2680,14 +2655,14 @@ mod tests {
             // in_progress.commit().expect("to commit")
         }
 
-        // Scoped borrow of `store`.
-        {
-            let mut in_progress = store.begin_transaction().expect("begun successfully");
-            let last_tx = in_progress.last_tx_id();
+        // // Scoped borrow of `store`.
+        // {
+        //     let mut in_progress = store.begin_transaction().expect("begun successfully");
+        //     let last_tx = in_progress.last_tx_id();
 
-            assert_eq!(get_sync_password(&in_progress, SyncGuid("{c5144948-fba1-594b-8148-ff70c85ee19a}".into())).expect("to get_sync_password"),
-                       None);
-        }
+        //     assert_eq!(get_sync_password(&in_progress, SyncGuid("{c5144948-fba1-594b-8148-ff70c85ee19a}".into())).expect("to get_sync_password"),
+        //                None);
+        // }
 
 
         // // Scoped borrow of `store`.
