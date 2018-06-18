@@ -103,3 +103,29 @@ impl<T> From<T> for CredentialId where T: Into<String> {
         CredentialId(x.into())
     }
 }
+
+/// A Sync.next credential.
+///
+/// A credential is a username/password pair, optionally decorated with a user-specified
+/// title.
+///
+/// A credential is uniquely identified by its `id`.
+#[derive(PartialEq, Eq, Hash, Clone, Debug)]
+pub struct Credential {
+    /// A stable opaque identifier uniquely naming this credential.
+    pub id: CredentialId,
+
+    // The username associated to this credential.
+    pub username: String,
+
+    // The password associated to this credential.
+    pub password: String,
+
+    // When the credential was created.  This is best-effort: it's the timestamp observed by the
+    // device on which the credential was created, which is incomparable with timestamps observed by
+    // other devices in the constellation (including any servers).
+    pub created_at: DateTime<Utc>,
+
+    /// An optional user-specified title of this credential, like `My LDAP`.
+    pub title: Option<String>,
+}

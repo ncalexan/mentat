@@ -53,7 +53,22 @@ use mentat::vocabulary::{
     Definition
 };
 
+use credentials::{
+    CREDENTIAL_CREATED_AT,
+    CREDENTIAL_ID,
+    CREDENTIAL_PASSWORD,
+    CREDENTIAL_TITLE,
+    CREDENTIAL_USERNAME,
+    LOGIN_AT,
+    LOGIN_CREDENTIAL,
+    LOGIN_DEVICE,
+    LOGIN_FORM,
+    LOGIN_URL,
+    add_credential,
+};
+
 use types::{
+    Credential,
     CredentialId,
     FormTarget,
     ServerPassword,
@@ -61,70 +76,6 @@ use types::{
 };
 
 lazy_static! {
-    // [:credential/username       :db.type/string  :db.cardinality/one]
-    // [:credential/password       :db.type/string  :db.cardinality/one]
-    // [:credential/created        :db.type/instant :db.cardinality/one]
-    // An application might allow users to name their credentials; e.g., "My LDAP".
-    // [:credential/title          :db.type/string  :db.cardinality/one]
-
-    static ref CREDENTIAL_ID: Keyword = {
-        kw!(:credential/id)
-    };
-
-    static ref CREDENTIAL_USERNAME: Keyword = {
-        kw!(:credential/username)
-    };
-
-    static ref CREDENTIAL_PASSWORD: Keyword = {
-        kw!(:credential/password)
-    };
-
-    static ref CREDENTIAL_CREATED_AT: Keyword = {
-        kw!(:credential/createdAt)
-    };
-
-    static ref CREDENTIAL_TITLE: Keyword = {
-        kw!(:credential/title)
-    };
-
-    static ref CREDENTIAL_VOCAB: vocabulary::Definition = {
-        vocabulary::Definition {
-            name: kw!(:org.mozilla/credential),
-            version: 1,
-            attributes: vec![
-                (CREDENTIAL_ID.clone(),
-                 vocabulary::AttributeBuilder::helpful()
-                 .value_type(ValueType::String)
-                 .unique(vocabulary::attribute::Unique::Identity)
-                 .multival(false)
-                 .build()),
-                (CREDENTIAL_USERNAME.clone(),
-                 vocabulary::AttributeBuilder::helpful()
-                 .value_type(ValueType::String)
-                 .multival(false)
-                 .build()),
-                (CREDENTIAL_PASSWORD.clone(),
-                 vocabulary::AttributeBuilder::helpful()
-                 .value_type(ValueType::String)
-                 .multival(false)
-                 .build()),
-                (CREDENTIAL_CREATED_AT.clone(),
-                 vocabulary::AttributeBuilder::helpful()
-                 .value_type(ValueType::Instant)
-                 .multival(false)
-                 .build()),
-                (CREDENTIAL_TITLE.clone(),
-                 vocabulary::AttributeBuilder::helpful()
-                 .value_type(ValueType::String)
-                 .multival(false)
-                 .build()),
-            ],
-            pre: Definition::no_op,
-            post: Definition::no_op,
-        }
-    };
-
-
     // A 'form' is either an HTTP login box _or_ a web form.
     // [:http/realm                :db.type/string  :db.cardinality/one]
     // It's possible that hostname or submitOrigin are unique-identity attributes.
@@ -134,27 +85,27 @@ lazy_static! {
     // [:form/passwordField        :db.type/string  :db.cardinality/one]
     // This is our many-to-many relation between forms and credentials.
     // [:form/credential           :db.type/ref     :db.cardinality/many]
-    static ref FORM_HOSTNAME: Keyword = {
+    pub static ref FORM_HOSTNAME: Keyword = {
         kw!(:form/hostname)
     };
 
-    static ref FORM_SUBMIT_URL: Keyword = {
+    pub static ref FORM_SUBMIT_URL: Keyword = {
         kw!(:form/submitUrl)
     };
 
-    static ref FORM_USERNAME_FIELD: Keyword = {
+    pub static ref FORM_USERNAME_FIELD: Keyword = {
         kw!(:form/usernameField)
     };
 
-    static ref FORM_PASSWORD_FIELD: Keyword = {
+    pub static ref FORM_PASSWORD_FIELD: Keyword = {
         kw!(:form/passwordField)
     };
 
-    static ref FORM_CREDENTIAL: Keyword = {
+    pub static ref FORM_CREDENTIAL: Keyword = {
         kw!(:form/credential)
     };
 
-    static ref FORM_HTTP_REALM: Keyword = {
+    pub static ref FORM_HTTP_REALM: Keyword = {
         kw!(:form/httpRealm)
     };
 
@@ -163,11 +114,11 @@ lazy_static! {
     // For now, however, we don't want to add an identifier and identify forms by content, so we're
     // linking a form to a unique Sync password.  Having the link go in this direction lets us
     // upsert the form.
-    static ref FORM_SYNC_PASSWORD: Keyword = {
+    pub static ref FORM_SYNC_PASSWORD: Keyword = {
         kw!(:form/syncPassword)
     };
 
-    static ref FORM_VOCAB: vocabulary::Definition = {
+    pub static ref FORM_VOCAB: vocabulary::Definition = {
         vocabulary::Definition {
             name: kw!(:org.mozilla/form),
             version: 1,
@@ -214,63 +165,11 @@ lazy_static! {
         }
     };
 
-    // This is metadata recording user behavior.
-    // [:login/at                  :db.type/instant :db.cardinality/one]
-    // [:login/url                 :db.type/string  :db.cardinality/one]
-    // [:login/credential          :db.type/ref     :db.cardinality/one]
-    // [:login/form                :db.type/ref     :db.cardinality/one]
-    static ref LOGIN_AT: Keyword = {
-        kw!(:login/at)
-    };
-
-    static ref LOGIN_URL: Keyword = {
-        kw!(:login/url)
-    };
-
-    static ref LOGIN_CREDENTIAL: Keyword = {
-        kw!(:login/credential)
-    };
-
-    static ref LOGIN_FORM: Keyword = {
-        kw!(:login/form)
-    };
-
-    static ref LOGIN_VOCAB: vocabulary::Definition = {
-        vocabulary::Definition {
-            name: kw!(:org.mozilla/login),
-            version: 1,
-            attributes: vec![
-                (LOGIN_AT.clone(),
-                 vocabulary::AttributeBuilder::helpful()
-                 .value_type(ValueType::Instant)
-                 .multival(false)
-                 .build()),
-                (LOGIN_URL.clone(),
-                 vocabulary::AttributeBuilder::helpful()
-                 .value_type(ValueType::String)
-                 .multival(false)
-                 .build()),
-                (LOGIN_CREDENTIAL.clone(),
-                 vocabulary::AttributeBuilder::helpful()
-                 .value_type(ValueType::Ref)
-                 .multival(false)
-                 .build()),
-                (LOGIN_FORM.clone(),
-                 vocabulary::AttributeBuilder::helpful()
-                 .value_type(ValueType::Ref)
-                 .multival(false)
-                 .build()),
-            ],
-            pre: Definition::no_op,
-            post: Definition::no_op,
-        }
-    };
-
-    static ref SYNC_PASSWORD_CREDENTIAL: Keyword = {
+    pub static ref SYNC_PASSWORD_CREDENTIAL: Keyword = {
         kw!(:sync.password/credential)
     };
 
-    static ref SYNC_PASSWORD_UUID: Keyword = {
+    pub static ref SYNC_PASSWORD_UUID: Keyword = {
         kw!(:sync.password/uuid)
     };
 
@@ -278,35 +177,35 @@ lazy_static! {
     // comparisons.  Downloading updates materialTx only.  We only use materialTx to
     // determine whether or not to upload.  Uploaded records are built using metadataTx,
     // however.  Successful upload sets both materialTx and metadataTx.
-    static ref SYNC_PASSWORD_MATERIAL_TX: Keyword = {
+    pub static ref SYNC_PASSWORD_MATERIAL_TX: Keyword = {
         kw!(:sync.password/materialTx)
     };
 
-    static ref SYNC_PASSWORD_METADATA_TX: Keyword = {
+    pub static ref SYNC_PASSWORD_METADATA_TX: Keyword = {
         kw!(:sync.password/metadataTx)
     };
 
-    static ref SYNC_PASSWORD_SERVER_MODIFIED: Keyword = {
+    pub static ref SYNC_PASSWORD_SERVER_MODIFIED: Keyword = {
         kw!(:sync.password/serverModified)
     };
 
-    static ref SYNC_PASSWORD_TIMES_USED: Keyword = {
+    pub static ref SYNC_PASSWORD_TIMES_USED: Keyword = {
         kw!(:sync.password/timesUsed)
     };
 
-    static ref SYNC_PASSWORD_TIME_CREATED: Keyword = {
+    pub static ref SYNC_PASSWORD_TIME_CREATED: Keyword = {
         kw!(:sync.password/timeCreated)
     };
 
-    static ref SYNC_PASSWORD_TIME_LAST_USED: Keyword = {
+    pub static ref SYNC_PASSWORD_TIME_LAST_USED: Keyword = {
         kw!(:sync.password/timeLastUsed)
     };
 
-    static ref SYNC_PASSWORD_TIME_PASSWORD_CHANGED: Keyword = {
+    pub static ref SYNC_PASSWORD_TIME_PASSWORD_CHANGED: Keyword = {
         kw!(:sync.password/timePasswordChanged)
     };
 
-    static ref SYNC_PASSWORD_VOCAB: vocabulary::Definition = {
+    pub static ref SYNC_PASSWORD_VOCAB: vocabulary::Definition = {
         vocabulary::Definition {
             name: kw!(:org.mozilla.sync/login),
             version: 1,
@@ -363,7 +262,6 @@ lazy_static! {
             post: Definition::no_op,
         }
     };
-
 }
 
 // Note that in a Mentat-native world there's no need for a GUID.
@@ -1007,38 +905,6 @@ pub fn find_recent_sync_passwords(queryable: &mut Store,
         .collect::<mentat::errors::Result<Vec<_>>>()?;
 
     Ok(logins)
-}
-
-fn add_credential<I>(builder: &mut Builder<TypedValue>,
-                  id: CredentialId,
-                  username: Option<String>,
-                  password: String,
-                  created: I)
-                  -> mentat::errors::Result<()>
-    where I: Into<Option<DateTime<Utc>>>
-{
-    let c = Builder::tempid("c");
-
-    builder.add(c.clone(),
-                CREDENTIAL_ID.clone(),
-                TypedValue::typed_string(id));
-    if let Some(username) = username {
-        builder.add(c.clone(),
-                    CREDENTIAL_USERNAME.clone(),
-                    TypedValue::String(username.into()));
-    }
-    builder.add(c.clone(),
-                CREDENTIAL_PASSWORD.clone(),
-                TypedValue::String(password.into()));
-    // TODO: set created to the transaction timestamp.  This might require implementing
-    // (transaction-instant), which requires some thought because it is a "delayed binding".
-    created.into().map(|created| {
-        builder.add(c.clone(),
-                    CREDENTIAL_CREATED_AT.clone(),
-                    TypedValue::Instant(created));
-    });
-
-    Ok(())
 }
 
 // TODO: figure out the API that allows to express optional typed results, where None is okay but Some(bad) is not OK, like:
@@ -1737,7 +1603,8 @@ pub fn apply_changed_login(in_progress: &mut InProgress,
                            id.clone(),
                            login.username.clone(),
                            login.password.clone(),
-                           login.time_created.clone())?;
+                           login.time_created.clone(),
+                           None)?;
             transact_sync_password_metadata(&mut builder, &login, id.clone())?;
 
             // Set metadataTx and materialTx to :db/tx.
@@ -2061,14 +1928,13 @@ where I: IntoIterator<Item=SyncGuid> {
 mod tests {
     use super::*;
 
+    use tests::{
+        testing_store,
+    };
+
     extern crate env_logger;
 
     use chrono;
-
-    use mentat::vocabulary::{
-        VersionedStore,
-        VocabularyOutcome,
-    };
 
     lazy_static! {
         static ref LOGIN1: ServerPassword = {
@@ -2104,26 +1970,6 @@ mod tests {
                 times_used: 1,
             }
         };
-    }
-
-    fn testing_store() -> Store {
-        let mut store = Store::open("").expect("opened");
-
-        // Scoped borrow of `store`.
-        {
-            let mut in_progress = store.begin_transaction().expect("begun successfully");
-
-            assert!(in_progress.verify_core_schema().is_ok());
-
-            assert_eq!(VocabularyOutcome::Installed, in_progress.ensure_vocabulary(&CREDENTIAL_VOCAB).expect("ensure succeeded"));
-            assert_eq!(VocabularyOutcome::Installed, in_progress.ensure_vocabulary(&LOGIN_VOCAB).expect("ensure succeeded"));
-            assert_eq!(VocabularyOutcome::Installed, in_progress.ensure_vocabulary(&FORM_VOCAB).expect("ensure succeeded"));
-            assert_eq!(VocabularyOutcome::Installed, in_progress.ensure_vocabulary(&SYNC_PASSWORD_VOCAB).expect("ensure succeeded"));
-
-            in_progress.commit().expect("commit succeeded");
-        }
-
-        store
     }
 
     #[test]
@@ -2237,6 +2083,7 @@ mod tests {
                            CredentialId(LOGIN1.uuid.0.clone()),
                            Some("us3rnam3@mockymid.com".into()),
                            "pa33w3rd".into(),
+                           None,
                            None)
                 .expect("to update credential");
             in_progress.transact_entity_builder(builder).expect("to transact");
@@ -2434,22 +2281,7 @@ mod tests {
     fn test_lockbox_logins() {
         let cid = CredentialId("id1".to_string());
 
-        let mut store = Store::open("").expect("opened");
-
-        // Scoped borrow of `store`.
-        {
-            let mut in_progress = store.begin_transaction().expect("begun successfully");
-
-            assert!(in_progress.verify_core_schema().is_ok());
-
-            assert_eq!(VocabularyOutcome::Installed, in_progress.ensure_vocabulary(&CREDENTIAL_VOCAB).expect("ensure succeeded"));
-            assert_eq!(VocabularyOutcome::Installed, in_progress.ensure_vocabulary(&LOGIN_VOCAB).expect("ensure succeeded"));
-            assert_eq!(VocabularyOutcome::Installed, in_progress.ensure_vocabulary(&FORM_VOCAB).expect("ensure succeeded"));
-            assert_eq!(VocabularyOutcome::Installed, in_progress.ensure_vocabulary(&SYNC_PASSWORD_VOCAB).expect("ensure succeeded"));
-
-            // If we commit, it'll stick around.
-            in_progress.commit().expect("commit succeeded");
-        }
+        let mut store = testing_store();
 
         // Scoped borrow of `store`.
         {
@@ -2460,6 +2292,7 @@ mod tests {
                            cid.clone(),
                            Some("user1".to_string()),
                            "pass1".to_string(),
+                           None,
                            None)
                 .expect("to add credential 1");
             in_progress.transact_entity_builder(builder).expect("to transact");
@@ -2633,7 +2466,9 @@ mod tests {
             login.modified = mentat_core::now();
 
             let mut builder = Builder::<TypedValue>::new();
-            add_credential(&mut builder, "a-credential-id".into(), login.username.clone(), login.password.clone(), None).expect("to add credential");
+            add_credential(&mut builder, "a-credential-id".into(), login.username.clone(), login.password.clone(),
+                           None,
+                           None).expect("to add credential");
             in_progress.transact_entity_builder(builder).expect("to transact");
 
             let id = find_credential_id_by_content(&in_progress,

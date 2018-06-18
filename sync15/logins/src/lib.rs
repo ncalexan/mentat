@@ -24,6 +24,52 @@ extern crate mentat_query;
 
 mod types;
 pub use types::{
+    Credential,
+    CredentialId,
     ServerPassword,
+    SyncGuid,
 };
+pub mod credentials;
 pub mod logins;
+
+#[cfg(test)]
+mod tests {
+    use mentat::{
+        Store,
+    };
+
+    use mentat::vocabulary::{
+        VersionedStore,
+        VocabularyOutcome,
+    };
+
+    use credentials::{
+        CREDENTIAL_VOCAB,
+        LOGIN_VOCAB,
+    };
+
+    use logins::{
+        FORM_VOCAB,
+        SYNC_PASSWORD_VOCAB,
+    };
+
+    pub(crate) fn testing_store() -> Store {
+        let mut store = Store::open("").expect("opened");
+
+        // Scoped borrow of `store`.
+        {
+            let mut in_progress = store.begin_transaction().expect("begun successfully");
+
+            assert!(in_progress.verify_core_schema().is_ok());
+
+            assert_eq!(VocabularyOutcome::Installed, in_progress.ensure_vocabulary(&CREDENTIAL_VOCAB).expect("ensure succeeded"));
+            assert_eq!(VocabularyOutcome::Installed, in_progress.ensure_vocabulary(&LOGIN_VOCAB).expect("ensure succeeded"));
+            assert_eq!(VocabularyOutcome::Installed, in_progress.ensure_vocabulary(&FORM_VOCAB).expect("ensure succeeded"));
+            assert_eq!(VocabularyOutcome::Installed, in_progress.ensure_vocabulary(&SYNC_PASSWORD_VOCAB).expect("ensure succeeded"));
+
+            in_progress.commit().expect("commit succeeded");
+        }
+
+        store
+    }
+}
