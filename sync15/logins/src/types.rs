@@ -116,7 +116,7 @@ pub struct Credential {
     pub id: CredentialId,
 
     // The username associated to this credential.
-    pub username: String,
+    pub username: Option<String>,
 
     // The password associated to this credential.
     pub password: String,

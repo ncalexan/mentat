@@ -23,11 +23,9 @@ use mentat::{
 };
 
 use mentat::conn::{
-    Dumpable,
     InProgress,
 };
 
-use mentat_core;
 use mentat_core::{
     Cloned,
     DateTime,
@@ -63,7 +61,6 @@ use credentials::{
     LOGIN_CREDENTIAL,
     LOGIN_DEVICE,
     LOGIN_FORM,
-    LOGIN_URL,
     add_credential,
 };
 
@@ -411,48 +408,6 @@ fn find_sync_password_credential_and_form
 //     in_progress.commit().and(Ok(()))
 // }
 
-// TODO: Into<Option<DateTime<Utc>>>.
-fn touch_by_id(builder: &mut Builder<TypedValue>,
-               id: CredentialId,
-               at: Option<DateTime<Utc>>)
-               -> mentat::errors::Result<()> {
-    let l = Builder::tempid("l");
-
-    // New login.
-    builder.add(l.clone(),
-                LOGIN_AT.clone(),
-                TypedValue::Instant(at.unwrap_or_else(|| mentat_core::now())));
-    builder.add(l.clone(),
-                LOGIN_CREDENTIAL.clone(),
-                Builder::lookup_ref(CREDENTIAL_ID.clone(), TypedValue::typed_string(id)));
-
-    Ok(())
-}
-
-// fn touch_sync_password_by_uuid(builder: &mut Builder<TypedValue>,
-//                             uuid: String,
-//                             at: Option<DateTime<Utc>>)
-//                             -> mentat::errors::Result<()> {
-//     // let (c, _f) =
-//     //     find_sync_password_credential_and_form(store, uuid.clone())?.expect("to find sync login");
-
-//     // let t = builder.named_tempid("t".into());
-//     let t = Builder::tempid("t")
-
-//     builder.add(t.clone(),
-//                 LOGIN_AT.clone(),
-//                 TypedValue::Instant(at.unwrap_or_else(|| mentat_core::now())))?;
-//     // builder.add(t.clone(), in_progress.get_entid(&LOGIN_URL).expect(":login"), TypedValue::String(login.time_created))?;
-//     builder.add(t.clone(),
-//                 LOGIN_CREDENTIAL.clone(),
-//                 "c")?; XXX
-//     // builder.add(t.clone(), in_progress.get_entid(&LOGIN_FORM).expect(":login"), f)?;
-
-//     in_progress.transact_builder(builder)?;
-
-//     in_progress.commit().and(Ok(()))
-// }
-
 // fn add_credential(in_progress: &mut InProgress, username: String, password: Option<String>, title: Option<String>) -> mentat::errors::Result<()> {
 //     // [:credential/username       :db.type/string  :db.cardinality/one]
 //     // [:credential/password       :db.type/string  :db.cardinality/one]
@@ -773,8 +728,7 @@ pub fn get_sync_password<Q>(queryable: &Q,
                             -> mentat::errors::Result<Option<ServerPassword>>
 where Q: Queryable {
     let q = r#"[:find
-                [?c
-                 (pull ?c [:credential/id :credential/username :credential/password :credential/createdAt])
+                [(pull ?c [:credential/id :credential/username :credential/password :credential/createdAt])
                  (pull ?f [:form/hostname :form/usernameField :form/passwordField :form/submitUrl :form/httpRealm])]
                 :in
                 ?uuid
@@ -792,7 +746,6 @@ where Q: Queryable {
     let server_password = match tuple {
         Some(bindings) => {
             let mut it = bindings.into_iter();
-            let c: Entid = it.next().unwrap().into_entid().unwrap();
 
             let cm = it.next().unwrap().into_map().unwrap();
             let cid = CredentialId(cm[CREDENTIAL_ID.clone()].as_string().cloned().map(|x| x.cloned()).unwrap()); // XXX
@@ -1599,12 +1552,15 @@ pub fn apply_changed_login(in_progress: &mut InProgress,
             // commit the sync tx at the same time.
             let id = CredentialId(login.uuid.0.clone()); // CredentialId::random();
 
-            add_credential(&mut builder,
-                           id.clone(),
-                           login.username.clone(),
-                           login.password.clone(),
-                           login.time_created.clone(),
-                           None)?;
+            let credential = Credential {
+                id: id.clone(),
+                username: login.username.clone(),
+                password: login.password.clone(),
+                created_at: login.time_created.clone(),
+                title: None,
+            };
+
+            add_credential(&mut builder, credential)?;
             transact_sync_password_metadata(&mut builder, &login, id.clone())?;
 
             // Set metadataTx and materialTx to :db/tx.
@@ -1926,15 +1882,23 @@ where I: IntoIterator<Item=SyncGuid> {
 
 #[cfg(test)]
 mod tests {
+    use chrono;
+    extern crate env_logger;
+
     use super::*;
+
+    use credentials::{
+        touch_by_id,
+    };
 
     use tests::{
         testing_store,
     };
 
-    extern crate env_logger;
-
-    use chrono;
+    use mentat::conn::{
+        Dumpable,
+    };
+    use mentat_core;
 
     lazy_static! {
         static ref LOGIN1: ServerPassword = {
@@ -2078,19 +2042,22 @@ mod tests {
             assert_eq!(sp, vec![]);
 
             // Now, let's modify locally an existing credential connected to a Sync 1.5 record.
+            let credential = Credential {
+                id: CredentialId(LOGIN1.uuid.0.clone()),
+                username: Some("us3rnam3@mockymid.com".into()),
+                password: "pa33w3rd".into(),
+                created_at: mentat_core::now(),
+                title: None,
+            };
             let mut builder = Builder::<TypedValue>::new();
-            add_credential(&mut builder,
-                           CredentialId(LOGIN1.uuid.0.clone()),
-                           Some("us3rnam3@mockymid.com".into()),
-                           "pa33w3rd".into(),
-                           None,
-                           None)
+            add_credential(&mut builder, credential)
                 .expect("to update credential");
             in_progress.transact_entity_builder(builder).expect("to transact");
 
-            // Just for our peace of mind.
+            // Just for our peace of mind.  One add and one retract per
+            // {username,password,created_at}, and the :db/txInstant.
             let t = in_progress.dump_last_transaction().expect("transaction");
-            assert_eq!(t.into_vector().expect("vector").len(), 5); // One add and one retract per field, and the :db/txInstant.
+            assert_eq!(t.into_vector().expect("vector").len(), 7);
 
             // Our local change results in a record needing to be uploaded remotely.
             let sp = get_modified_sync_password_uuids_to_upload(&in_progress).expect("to get_sync_password");
@@ -2288,12 +2255,14 @@ mod tests {
             let mut in_progress = store.begin_transaction().expect("begun successfully");
             let mut builder = Builder::<TypedValue>::new();
 
-            add_credential(&mut builder,
-                           cid.clone(),
-                           Some("user1".to_string()),
-                           "pass1".to_string(),
-                           None,
-                           None)
+            let credential = Credential {
+                id: cid.clone(),
+                username: Some("user1".to_string()),
+                password: "pass1".to_string(),
+                created_at: mentat_core::now(),
+                title: None,
+            };
+            add_credential(&mut builder, credential)
                 .expect("to add credential 1");
             in_progress.transact_entity_builder(builder).expect("to transact");
             in_progress.commit().expect("to commit");
@@ -2466,9 +2435,15 @@ mod tests {
             login.modified = mentat_core::now();
 
             let mut builder = Builder::<TypedValue>::new();
-            add_credential(&mut builder, "a-credential-id".into(), login.username.clone(), login.password.clone(),
-                           None,
-                           None).expect("to add credential");
+
+            let mut credential = Credential {
+                id: "a-credential-id".into(),
+                username: login.username.clone(),
+                password: login.password.clone(),
+                created_at: login.time_created.clone(),
+                title: None,
+            };
+            add_credential(&mut builder, credential).expect("to add credential");
             in_progress.transact_entity_builder(builder).expect("to transact");
 
             let id = find_credential_id_by_content(&in_progress,
