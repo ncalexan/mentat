@@ -11,9 +11,13 @@
 #![crate_name = "mentat_sync15_logins"]
 
 extern crate chrono;
+#[macro_use] extern crate error_chain;
 #[macro_use] extern crate log;
 #[macro_use] extern crate lazy_static;
-#[macro_use] extern crate error_chain;
+extern crate serde;
+#[macro_use]
+extern crate serde_derive;
+extern crate serde_json;
 extern crate uuid;
 
 extern crate edn;
@@ -26,6 +30,7 @@ mod types;
 pub use types::{
     Credential,
     CredentialId,
+    FormTarget,
     ServerPassword,
     SyncGuid,
 };

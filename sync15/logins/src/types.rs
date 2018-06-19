@@ -26,18 +26,31 @@ use chrono::{
     Utc,
 };
 
+use serde::{
+    Deserializer,
+    Serializer,
+};
+
 use uuid::{
     Uuid,
 };
 
+use edn::{
+    FromMillis,
+    ToMillis,
+};
+
 /// Firefox Sync password records must have at least a formSubmitURL or httpRealm, but not both.
-#[derive(PartialEq, Eq, Hash, Clone, Debug)]
+#[derive(PartialEq, Eq, Hash, Clone, Debug, Serialize, Deserialize)]
 pub enum FormTarget {
+    #[serde(rename = "httpRealm")]
     HttpRealm(String),
+
+    #[serde(rename = "formSubmitURL")]
     FormSubmitURL(String),
 }
 
-#[derive(PartialEq, Eq, Hash, Clone, Debug)]
+#[derive(PartialEq, Eq, Hash, Clone, Debug, Serialize, Deserialize)]
 pub struct SyncGuid(pub(crate) String);
 
 impl AsRef<str> for SyncGuid {
@@ -52,16 +65,23 @@ impl<T> From<T> for SyncGuid where T: Into<String> {
     }
 }
 
+fn zero_timestamp() -> DateTime<Utc> {
+    DateTime::<Utc>::from_millis(0)
+}
+
 /// A Sync 1.5 password record.
-#[derive(PartialEq, Eq, Hash, Clone, Debug)]
+#[derive(PartialEq, Eq, Hash, Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ServerPassword {
     /// The UUID of this record, returned by the remote server as part of this record's envelope.
     ///
     /// For historical reasons, Sync 1.5 passwords use a UUID rather than a (9 character) GUID like
     /// other collections.
+    #[serde(rename = "id")]
     pub uuid: SyncGuid,
 
     /// The time last modified, returned by the remote server as part of this record's envelope.
+    #[serde(skip_serializing, default = "zero_timestamp")]
     pub modified: DateTime<Utc>,
 
     /// Material fields.  A password without a username corresponds to an XXX.
@@ -69,18 +89,60 @@ pub struct ServerPassword {
     pub username: Option<String>,
     pub password: String,
 
+    #[serde(flatten)]
     pub target: FormTarget,
 
     /// Metadata.  Unfortunately, not all clients pass-through (let alone collect and propagate!)
     /// metadata correctly.
+    #[serde(default)]
     pub times_used: usize,
+
+    #[serde(serialize_with = "ServerPassword::serialize_timestamp",
+            deserialize_with = "ServerPassword::deserialize_timestamp",
+            default = "zero_timestamp")]
     pub time_created: DateTime<Utc>,
+
+    #[serde(serialize_with = "ServerPassword::serialize_timestamp",
+            deserialize_with = "ServerPassword::deserialize_timestamp",
+            default = "zero_timestamp")]
     pub time_last_used: DateTime<Utc>,
+
+    #[serde(serialize_with = "ServerPassword::serialize_timestamp",
+            deserialize_with = "ServerPassword::deserialize_timestamp",
+            default = "zero_timestamp")]
     pub time_password_changed: DateTime<Utc>,
 
     /// Mostly deprecated: these fields were once used to help with form fill.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub username_field: Option<String>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub password_field: Option<String>,
+}
+
+impl ServerPassword {
+    fn serialize_timestamp<S>(x: &DateTime<Utc>, s: S) -> Result<S::Ok, S::Error> where S: Serializer {
+        s.serialize_u64(x.to_millis() as u64)
+    }
+
+    fn deserialize_timestamp<'de, D>(d: D) -> Result<DateTime<Utc>, D::Error> where D: Deserializer<'de> {
+        struct Visitor;
+
+        impl<'de> ::serde::de::Visitor<'de> for Visitor {
+            type Value = DateTime<Utc>;
+
+            fn expecting(&self, formatter: &mut ::std::fmt::Formatter) -> ::std::fmt::Result {
+                formatter.write_str("timestamp in millis")
+            }
+
+            fn visit_u64<E>(self, value: u64) -> Result<DateTime<Utc>, E> where E: ::serde::de::Error
+            {
+                Ok(DateTime::<Utc>::from_millis(value as i64))
+            }
+        }
+
+        d.deserialize_u64(Visitor)
+    }
 }
 
 #[derive(PartialEq, Eq, Hash, Clone, Debug)]
