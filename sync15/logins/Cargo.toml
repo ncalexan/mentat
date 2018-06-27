@@ -1,0 +1,29 @@
+[package]
+name = "logins"
+version = "0.0.1"
+
+[lib]
+name = "logins"
+path = "src/lib.rs"
+
+[dependencies]
+chrono = "0.4"
+failure = "0.1.1"
+failure_derive = "0.1.1"
+lazy_static = "0.2"
+log = "0.4"
+uuid = { version = "0.5", features = ["v4", "serde"] }
+
+serde = "^1.0.63"
+serde_derive = "^1.0.63"
+serde_json = "1.0"
+
+sync15-adapter = { path = "/Users/nalexander/Mozilla/application-services/sync15-adapter" }
+
+[dev-dependencies]
+env_logger = "0.5"
+
+prettytable-rs = "0.6"
+
+[dependencies.mentat]
+path = "../.."
