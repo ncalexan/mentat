@@ -22,6 +22,7 @@ extern crate uuid;
 
 #[macro_use] extern crate mentat;
 
+pub mod credentials;
 pub mod errors;
 pub use errors::{
     Error,
