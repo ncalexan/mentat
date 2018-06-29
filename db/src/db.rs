@@ -2971,4 +2971,82 @@ mod tests {
                           [200 :db.schema/attribute 100 ?tx false] ; Not actually applied!
                           [?tx :db/txInstant ?ms ?tx true]]");
     }
+
+    fn test_rewind() {
+        let mut conn = TestConn::default();
+
+        assert_transact!(conn, r#"[
+            {:db/id 200 :db/ident :test/one :db/valueType :db.type/long :db/cardinality :db.cardinality/one}
+            {:db/id 201 :db/ident :test/many :db/valueType :db.type/long :db/cardinality :db.cardinality/many}
+        ]"#);
+
+        let first = "[
+            [200 :db/ident :test/one]
+            [200 :db/valueType :db.type/long]
+            [200 :db/cardinality :db.cardinality/one]
+            [201 :db/ident :test/many]
+            [201 :db/valueType :db.type/long]
+            [201 :db/cardinality :db.cardinality/many]
+        ]";
+        assert_matches!(conn.datoms(), first);
+
+        let tx_report1 = assert_transact!(conn, r#"[
+            [:db/add 300 :test/one 1]
+            [:db/add 300 :test/many 2]
+            [:db/add 300 :test/many 3]
+        ]"#);
+
+        assert_matches!(conn.last_transaction(),
+                        "[[300 :test/one 1 ?tx true]
+                          [300 :test/many 2 ?tx true]
+                          [300 :test/many 3 ?tx true]
+                          [?tx :db/txInstant ?ms ?tx true]]");
+
+        let second = "[
+            [200 :db/ident :test/one]
+            [200 :db/valueType :db.type/long]
+            [200 :db/cardinality :db.cardinality/one]
+            [201 :db/ident :test/many]
+            [201 :db/valueType :db.type/long]
+            [201 :db/cardinality :db.cardinality/many]
+            [300 :test/one 1]
+            [300 :test/many 2]
+            [300 :test/many 3]
+        ]";
+        assert_matches!(conn.datoms(), second);
+
+        let tx_report2 = assert_transact!(conn, r#"[
+            [:db/add 300 :test/one 2]
+            [:db/add 300 :test/many 2]
+            [:db/retract 300 :test/many 3]
+            [:db/add 300 :test/many 4]
+        ]"#);
+
+        assert_matches!(conn.last_transaction(),
+                        "[[300 :test/one 1 ?tx false]
+                          [300 :test/one 2 ?tx true]
+                          [300 :test/many 3 ?tx false]
+                          [300 :test/many 4 ?tx true]
+                          [?tx :db/txInstant ?ms ?tx true]]");
+
+        let third = "[
+            [200 :db/ident :test/one]
+            [200 :db/valueType :db.type/long]
+            [200 :db/cardinality :db.cardinality/one]
+            [201 :db/ident :test/many]
+            [201 :db/valueType :db.type/long]
+            [201 :db/cardinality :db.cardinality/many]
+            [300 :test/one 2]
+            [300 :test/many 2]
+            [300 :test/many 4]
+        ]";
+        assert_matches!(conn.datoms(), third);
+
+        use rewind;
+        rewind::rewind_transaction(&conn.sqlite, tx_report2.tx_id).expect("rewind_transaction");
+        assert_matches!(conn.datoms(), second);
+
+        rewind::rewind_transaction(&conn.sqlite, tx_report1.tx_id).expect("rewind_transaction");
+        assert_matches!(conn.datoms(), first);
+    }
 }
