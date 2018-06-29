@@ -28,6 +28,7 @@ pub use errors::{
     Error,
     Result,
 };
+pub mod passwords;
 pub mod types;
 pub use types::{
     Credential,
