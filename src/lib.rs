@@ -46,6 +46,7 @@ pub use mentat_core::{
     Uuid,
     Utc,
     ValueType,
+    now,
 };
 
 pub use mentat_query::{
@@ -109,7 +110,13 @@ pub use errors::{
     Result,
 };
 
-pub use edn::ParseError;
+pub use edn::{
+    FromMicros,
+    FromMillis,
+    ParseError,
+    ToMicros,
+    ToMillis,
+};
 pub use mentat_db::DbError;
 pub use mentat_query_algebrizer::AlgebrizerError;
 pub use mentat_query_projector::ProjectorError;
