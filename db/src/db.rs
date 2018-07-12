@@ -14,12 +14,10 @@ use failure::{
     ResultExt,
 };
 
-use std::borrow::Borrow;
 use std::collections::HashMap;
 use std::collections::hash_map::{
     Entry,
 };
-use std::fmt::Display;
 use std::iter::{once, repeat};
 use std::ops::Range;
 use std::path::Path;
@@ -1081,20 +1079,14 @@ SELECT EXISTS
     Ok(())
 }
 
-pub trait PartitionMapping {
-    fn allocate_entid<S: ?Sized + Ord + Display>(&mut self, partition: &S) -> i64 where String: Borrow<S>;
-    fn allocate_entids<S: ?Sized + Ord + Display>(&mut self, partition: &S, n: usize) -> Range<i64> where String: Borrow<S>;
-    fn contains_entid(&self, entid: Entid) -> bool;
-}
-
-impl PartitionMapping for PartitionMap {
+impl PartitionMap {
     /// Allocate a single fresh entid in the given `partition`.
-    fn allocate_entid<S: ?Sized + Ord + Display>(&mut self, partition: &S) -> i64 where String: Borrow<S> {
+    pub(crate) fn allocate_entid(&mut self, partition: &str) -> i64 {
         self.allocate_entids(partition, 1).start
     }
 
     /// Allocate `n` fresh entids in the given `partition`.
-    fn allocate_entids<S: ?Sized + Ord + Display>(&mut self, partition: &S, n: usize) -> Range<i64> where String: Borrow<S> {
+    pub(crate) fn allocate_entids(&mut self, partition: &str, n: usize) -> Range<i64> {
         match self.get_mut(partition) {
             Some(partition) => {
                 let idx = *partition.get_index();
@@ -1106,7 +1098,7 @@ impl PartitionMapping for PartitionMap {
         }
     }
 
-    fn contains_entid(&self, entid: Entid) -> bool {
+    pub(crate) fn contains_entid(&self, entid: Entid) -> bool {
         self.values().any(|partition| partition.contains_entid(entid))
     }
 }
@@ -1114,6 +1106,10 @@ impl PartitionMapping for PartitionMap {
 #[cfg(test)]
 mod tests {
     extern crate env_logger;
+
+    use std::borrow::{
+        Borrow,
+    };
 
     use super::*;
     use bootstrap;
