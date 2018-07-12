@@ -69,7 +69,7 @@ pub(crate) struct Transactions(pub Vec<Datoms>);
 pub(crate) struct FulltextValues(pub Vec<(i64, String)>);
 
 impl Datom {
-    pub(crate) fn into_edn(&self) -> edn::Value {
+    pub(crate) fn to_edn(&self) -> edn::Value {
         let f = |entid: &EntidOrIdent| -> edn::Value {
             match *entid {
                 EntidOrIdent::Entid(ref y) => edn::Value::Integer(y.clone()),
@@ -88,19 +88,19 @@ impl Datom {
 }
 
 impl Datoms {
-    pub(crate) fn into_edn(&self) -> edn::Value {
-        edn::Value::Vector((&self.0).into_iter().map(|x| x.into_edn()).collect())
+    pub(crate) fn to_edn(&self) -> edn::Value {
+        edn::Value::Vector((&self.0).into_iter().map(|x| x.to_edn()).collect())
     }
 }
 
 impl Transactions {
-    pub(crate) fn into_edn(&self) -> edn::Value {
-        edn::Value::Vector((&self.0).into_iter().map(|x| x.into_edn()).collect())
+    pub(crate) fn to_edn(&self) -> edn::Value {
+        edn::Value::Vector((&self.0).into_iter().map(|x| x.to_edn()).collect())
     }
 }
 
 impl FulltextValues {
-    pub(crate) fn into_edn(&self) -> edn::Value {
+    pub(crate) fn to_edn(&self) -> edn::Value {
         edn::Value::Vector((&self.0).into_iter().map(|&(x, ref y)| edn::Value::Vector(vec![edn::Value::Integer(x), edn::Value::Text(y.clone())])).collect())
     }
 }

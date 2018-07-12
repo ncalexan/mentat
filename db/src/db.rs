@@ -1157,9 +1157,10 @@ mod tests {
             let pattern_value = edn::parse::value($expected.borrow())
                 .expect(format!("to be able to parse expected {}", $expected).as_str())
                 .without_spans();
-            assert!($input.matches(&pattern_value),
+            let input_value = $input.to_edn();
+            assert!(input_value.matches(&pattern_value),
                     "Expected value:\n{}\nto match pattern:\n{}\n",
-                    $input.to_pretty(120).unwrap(),
+                    input_value.to_pretty(120).unwrap(),
                     pattern_value.to_pretty(120).unwrap());
         }}
     }
@@ -1251,16 +1252,20 @@ mod tests {
             self.partition_map.get(&":db.part/tx".to_string()).unwrap().index - 1
         }
 
-        fn last_transaction(&self) -> edn::Value {
-            debug::transactions_after(&self.sqlite, &self.schema, self.last_tx_id() - 1).expect("last_transaction").0[0].into_edn()
+        fn last_transaction(&self) -> debug::Datoms {
+            debug::transactions_after(&self.sqlite, &self.schema, self.last_tx_id() - 1).expect("last_transaction").0.pop().unwrap()
         }
 
-        fn datoms(&self) -> edn::Value {
-            debug::datoms_after(&self.sqlite, &self.schema, bootstrap::TX0).expect("datoms").into_edn()
+        fn transactions(&self) -> debug::Transactions {
+            debug::transactions_after(&self.sqlite, &self.schema, bootstrap::TX0).expect("transactions")
         }
 
-        fn fulltext_values(&self) -> edn::Value {
-            debug::fulltext_values(&self.sqlite).expect("fulltext_values").into_edn()
+        fn datoms(&self) -> debug::Datoms {
+            debug::datoms_after(&self.sqlite, &self.schema, bootstrap::TX0).expect("datoms")
+        }
+
+        fn fulltext_values(&self) -> debug::FulltextValues {
+            debug::fulltext_values(&self.sqlite).expect("fulltext_values")
         }
 
         fn with_sqlite(mut conn: rusqlite::Connection) -> TestConn {
@@ -1303,12 +1308,20 @@ mod tests {
         }
     }
 
-    fn tempids(report: &TxReport) -> edn::Value {
+    struct TempIds(edn::Value);
+
+    impl TempIds {
+        fn to_edn(&self) -> edn::Value {
+            self.0.clone()
+        }
+    }
+
+    fn tempids(report: &TxReport) -> TempIds {
         let mut map: BTreeMap<edn::Value, edn::Value> = BTreeMap::default();
         for (tempid, &entid) in report.tempids.iter() {
             map.insert(edn::Value::Text(tempid.clone()), edn::Value::Integer(entid));
         }
-        edn::Value::Map(map)
+        TempIds(edn::Value::Map(map))
     }
 
     fn run_test_add(mut conn: TestConn) {
