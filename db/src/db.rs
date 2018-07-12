@@ -1015,14 +1015,21 @@ pub fn update_metadata(conn: &rusqlite::Connection, _old_schema: &Schema, new_sc
                      &[])?;
     }
 
-
-    let mut stmt = conn.prepare(format!("INSERT INTO schema SELECT e, a, v, value_type_tag FROM datoms WHERE e = ? AND a IN {}", entids::SCHEMA_SQL_LIST.as_str()).as_str())?;
-    for &entid in &metadata_report.attributes_installed {
-        stmt.execute(&[&entid as &ToSql])?;
+    // Populate the materialized view directly from datoms.  It's possible to do this incrementally.
+    if !metadata_report.attributes_installed.is_empty() || !metadata_report.attributes_altered.is_empty() {
+        conn.execute(format!("DELETE FROM schema").as_str(),
+                     &[])?;
+        let s = r#"
+            WITH s(e) AS (SELECT e FROM datoms WHERE a = {})
+            INSERT INTO schema
+            SELECT s.e, a, v, value_type_tag
+            FROM datoms, s
+            WHERE s.e = datoms.e AND a IN {}
+        "#;
+        conn.execute(format!(s, entids::DB_VALUE_TYPE, entids::SCHEMA_SQL_LIST.as_str()).as_str(),
+                     &[])?;
     }
 
-    let mut delete_stmt = conn.prepare(format!("DELETE FROM schema WHERE e = ? AND a IN {}", entids::SCHEMA_SQL_LIST.as_str()).as_str())?;
-    let mut insert_stmt = conn.prepare(format!("INSERT INTO schema SELECT e, a, v, value_type_tag FROM datoms WHERE e = ? AND a IN {}", entids::SCHEMA_SQL_LIST.as_str()).as_str())?;
     let mut index_stmt = conn.prepare("UPDATE datoms SET index_avet = ? WHERE a = ?")?;
     let mut unique_value_stmt = conn.prepare("UPDATE datoms SET unique_value = ? WHERE a = ?")?;
     let mut cardinality_stmt = conn.prepare(r#"
@@ -1035,9 +1042,6 @@ SELECT EXISTS
         left.v <> right.v)"#)?;
 
     for (&entid, alterations) in &metadata_report.attributes_altered {
-        delete_stmt.execute(&[&entid as &ToSql])?;
-        insert_stmt.execute(&[&entid as &ToSql])?;
-
         let attribute = new_schema.require_attribute_for_entid(entid)?;
 
         for alteration in alterations {
