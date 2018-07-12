@@ -44,15 +44,15 @@ pub struct Partition {
     pub start: i64,
     /// Maximum allowed entid in the partition.
     pub end: i64,
-    /// The next entid to be allocated in the partition.
-    pub index: i64,
     /// `true` if entids in the partition can be excised with `:db/excise`.
     pub allow_excision: bool,
+    /// The next entid to be allocated in the partition.
+    index: i64,
 }
 
 impl Partition {
     pub fn new(start: i64, end: i64, index: i64, allow_excision: bool) -> Partition {
-        assert!(start <= index, "A partition represents a monotonic increasing sequence of entids.");
+        assert!(start <= index && index <= end, "A partition represents a monotonic increasing sequence of entids.");
         Partition { start, end, index, allow_excision }
     }
 
@@ -62,6 +62,15 @@ impl Partition {
 
     pub fn allows_entid(&self, e: i64) -> bool {
         (e >= self.start) && (e <= self.end)
+    }
+
+    pub fn get_index(&self) -> &i64 {
+        &self.index
+    }
+
+    pub fn set_index(&mut self, e: i64) {
+        assert!(self.allows_entid(e), "Partition index must be within its allocated space.");
+        self.index = e;
     }
 }
 

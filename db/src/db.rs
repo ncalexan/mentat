@@ -299,7 +299,7 @@ pub fn create_current_version(conn: &mut rusqlite::Connection) -> Result<DB> {
     // This is necessary: `transact` will only UPDATE parts, not INSERT them if they're missing.
     for (part, partition) in db.partition_map.iter() {
         // TODO: Convert "keyword" part to SQL using Value conversion.
-        tx.execute("INSERT INTO parts (part, start, end, idx, allow_excision) VALUES (?, ?, ?, ?, ?)", &[part, &partition.start, &partition.end, &partition.index, &partition.allow_excision])?;
+        tx.execute("INSERT INTO parts (part, start, end, idx, allow_excision) VALUES (?, ?, ?, ?, ?)", &[part, &partition.start, &partition.end, partition.get_index(), &partition.allow_excision])?;
     }
 
     // TODO: return to transact_internal to self-manage the encompassing SQLite transaction.
@@ -984,7 +984,7 @@ pub fn update_partition_map(conn: &rusqlite::Connection, partition_map: &Partiti
 
     let params: Vec<&ToSql> = partition_map.iter().flat_map(|(name, partition)| {
         once(name as &ToSql)
-            .chain(once(&partition.index as &ToSql))
+            .chain(once(partition.get_index() as &ToSql))
     }).collect();
 
     // TODO: only cache the latest of these statements.  Changing the set of partitions isn't
@@ -1096,9 +1096,9 @@ impl PartitionMapping for PartitionMap {
     fn allocate_entids<S: ?Sized + Ord + Display>(&mut self, partition: &S, n: usize) -> Range<i64> where String: Borrow<S> {
         match self.get_mut(partition) {
             Some(partition) => {
-                let idx = partition.index;
-                partition.index += n as i64;
-                idx..partition.index
+                let idx = *partition.get_index();
+                partition.set_index(idx + n as i64);
+                idx..*partition.get_index()
             },
             // This is a programming error.
             None => panic!("Cannot allocate entid from unknown partition: {}", partition),
@@ -1248,7 +1248,7 @@ mod tests {
         }
 
         fn last_tx_id(&self) -> Entid {
-            self.partition_map.get(&":db.part/tx".to_string()).unwrap().index - 1
+            self.partition_map.get(&":db.part/tx".to_string()).unwrap().get_index() - 1
         }
 
         fn last_transaction(&self) -> edn::Value {
@@ -1280,7 +1280,7 @@ mod tests {
             // Add a fake partition to allow tests to do things like
             // [:db/add 111 :foo/bar 222]
             {
-                let fake_partition = Partition { start: 100, end: 2000, index: 1000, allow_excision: true };
+                let fake_partition = Partition::new(100, 2000, 1000, true);
                 parts.insert(":db.part/fake".into(), fake_partition);
             }
 
