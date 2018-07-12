@@ -1114,7 +1114,14 @@ impl PartitionMapping for PartitionMap {
 mod tests {
     extern crate env_logger;
 
+    use std::collections::{
+        BTreeMap,
+    };
+
+    use rusqlite;
+
     use super::*;
+
     use bootstrap;
     use debug;
     use errors;
@@ -1135,16 +1142,15 @@ mod tests {
         attribute,
     };
     use mentat_core::util::Either::*;
-    use rusqlite;
-    use std::collections::{
-        BTreeMap,
-    };
     use internal_types::{
         Term,
         TermWithTempIds,
     };
     use tx::{
         transact_terms,
+    };
+    use watcher::{
+        TransactWatcher,
     };
 
     // Macro to parse a `Borrow<str>` to an `edn::Value` and assert the given `edn::Value` `matches`
@@ -1171,14 +1177,39 @@ mod tests {
     macro_rules! assert_transact {
         ( $conn: expr, $input: expr, $expected: expr ) => {{
             trace!("assert_transact: {}", $input);
-            let result = $conn.transact($input).map_err(|e| e.to_string());
+            let result = $conn.transact($input, NullWatcher()).map_err(|e| e.to_string());
             assert_eq!(result, $expected.map_err(|e| e.to_string()));
         }};
         ( $conn: expr, $input: expr ) => {{
             trace!("assert_transact: {}", $input);
-            let result = $conn.transact($input);
+            let result = $conn.transact($input, NullWatcher());
             assert!(result.is_ok(), "Expected Ok(_), got `{}`", result.unwrap_err());
             result.unwrap()
+        }};
+    }
+
+    // Transact $input against the given $conn, expecting success.
+    //
+    // This unwraps safely and makes asserting errors pleasant.
+    macro_rules! assert_transact_witnessed {
+        ( $conn: expr, $input: expr ) => {{
+            let witnessed = ::std::cell::RefCell::new(None);
+            let result = { // Scope borrow of witnessed.
+                let watcher = debug::CollectingWatcher::new(&witnessed);
+
+                trace!("assert_transact: {}", $input);
+                let result = $conn.transact($input, watcher);
+                assert!(result.is_ok(), "Expected Ok(_), got `{}`", result.unwrap_err());
+                result
+            };
+
+            let witnessed = witnessed.into_inner();
+            assert!(witnessed.is_some(), "Expected Some(_), got `None`");
+
+            let (datoms, tx) = witnessed.unwrap();
+            let datoms = debug::Datoms::new($conn.schema.clone(), datoms.into_iter().map(|(op, e, a, v)| debug::Datom { e, a, v, tx, added: Some(op == OpType::Add) }).collect());
+
+            (result.unwrap(), datoms)
         }};
     }
 
@@ -1199,7 +1230,7 @@ mod tests {
             assert_eq!(materialized_schema, self.schema);
         }
 
-        fn transact<I>(&mut self, transaction: I) -> Result<TxReport> where I: Borrow<str> {
+        fn transact<I, W>(&mut self, transaction: I, watcher: W) -> Result<TxReport> where I: Borrow<str>, W: TransactWatcher {
             // Failure to parse the transaction is a coding error, so we unwrap.
             let entities = edn::parse::entities(transaction.borrow()).expect(format!("to be able to parse {} into entities", transaction.borrow()).as_str());
 
@@ -1208,7 +1239,7 @@ mod tests {
                 // We're about to write, so go straight ahead and get an IMMEDIATE transaction.
                 let tx = self.sqlite.transaction_with_behavior(TransactionBehavior::Immediate)?;
                 // Applying the transaction can fail, so we don't unwrap.
-                let details = transact(&tx, self.partition_map.clone(), &self.schema, &self.schema, NullWatcher(), entities)?;
+                let details = transact(&tx, self.partition_map.clone(), &self.schema, &self.schema, watcher, entities)?;
                 tx.commit()?;
                 details
             };
@@ -1363,7 +1394,6 @@ mod tests {
                           [101 :db.schema/version 22]
                           [200 :db.schema/attribute 100]
                           [200 :db.schema/attribute 101]]");
-
 
         // Test that asserting existing :db.cardinality/one elements doesn't change the store.
         assert_transact!(conn, "[[:db/add 100 :db.schema/version 11]
@@ -2789,5 +2819,156 @@ mod tests {
         let sqlite = new_connection_with_key("", "hunter2").expect("Failed to create encrypted connection");
         // Run a basic test as a sanity check.
         run_test_add(TestConn::with_sqlite(sqlite));
+    }
+
+    #[test]
+    fn test_transaction_watcher() {
+        let mut conn = TestConn::default();
+
+        // Insert a few :db.cardinality/one elements.
+        let (_, witnessed) = assert_transact_witnessed!(conn, r#"
+            [[:db/add 100 :db.schema/version 1]
+             [:db/add 101 :db.schema/version 2]]
+        "#);
+        assert_matches!(conn.last_transaction(),
+                        "[[100 :db.schema/version 1 ?tx true]
+                          [101 :db.schema/version 2 ?tx true]
+                          [?tx :db/txInstant ?ms ?tx true]]");
+        assert_matches!(conn.datoms(),
+                        "[[100 :db.schema/version 1]
+                          [101 :db.schema/version 2]]");
+        assert_matches!(witnessed,
+                        "[[100 :db.schema/version 1 ?tx true]
+                          [101 :db.schema/version 2 ?tx true]
+                          [?tx :db/txInstant ?ms ?tx true]]");
+
+        // And a few :db.cardinality/many elements.
+        let (_, witnessed) = assert_transact_witnessed!(conn, r#"
+            [[:db/add 200 :db.schema/attribute 100]
+             [:db/add 200 :db.schema/attribute 101]]
+        "#);
+        assert_matches!(conn.last_transaction(),
+                        "[[200 :db.schema/attribute 100 ?tx true]
+                          [200 :db.schema/attribute 101 ?tx true]
+                          [?tx :db/txInstant ?ms ?tx true]]");
+        assert_matches!(conn.datoms(),
+                        "[[100 :db.schema/version 1]
+                          [101 :db.schema/version 2]
+                          [200 :db.schema/attribute 100]
+                          [200 :db.schema/attribute 101]]");
+        assert_matches!(witnessed,
+                        "[[200 :db.schema/attribute 100 ?tx true]
+                          [200 :db.schema/attribute 101 ?tx true]
+                          [?tx :db/txInstant ?ms ?tx true]]");
+
+
+        // Test replacing existing :db.cardinality/one elements.
+        let (_, witnessed) = assert_transact_witnessed!(conn, r#"
+            [[:db/add 100 :db.schema/version 11]
+             [:db/add 101 :db.schema/version 22]]
+        "#);
+        assert_matches!(conn.last_transaction(),
+                        "[[100 :db.schema/version 1 ?tx false]
+                          [100 :db.schema/version 11 ?tx true]
+                          [101 :db.schema/version 2 ?tx false]
+                          [101 :db.schema/version 22 ?tx true]
+                          [?tx :db/txInstant ?ms ?tx true]]");
+        assert_matches!(conn.datoms(),
+                        "[[100 :db.schema/version 11]
+                          [101 :db.schema/version 22]
+                          [200 :db.schema/attribute 100]
+                          [200 :db.schema/attribute 101]]");
+        // Right now, transaction watchers do not "witness" all datoms that are implied by entities
+        // transacted.
+        // That is, transaction watchers are cheap to implement, not maximally useful.
+        assert_matches!(witnessed,
+                        "[[100 :db.schema/version 11 ?tx true]
+                          [101 :db.schema/version 22 ?tx true]
+                          [?tx :db/txInstant ?ms ?tx true]]");
+
+        // Test that asserting existing :db.cardinality/one elements doesn't change the store.
+        let (_, witnessed) = assert_transact_witnessed!(conn, r#"
+            [[:db/add 100 :db.schema/version 11]
+             [:db/add 101 :db.schema/version 22]]
+        "#);
+        assert_matches!(conn.last_transaction(),
+                        "[[?tx :db/txInstant ?ms ?tx true]]");
+        assert_matches!(conn.datoms(),
+                        "[[100 :db.schema/version 11]
+                          [101 :db.schema/version 22]
+                          [200 :db.schema/attribute 100]
+                          [200 :db.schema/attribute 101]]");
+        // Right now, transaction watchers "witness" datoms that don't actually change the store.
+        // That is, transaction watchers are cheap to implement, not maximally useful.
+        assert_matches!(witnessed,
+                        "[[100 :db.schema/version 11 ?tx true]
+                          [101 :db.schema/version 22 ?tx true]
+                          [?tx :db/txInstant ?ms ?tx true]]");
+
+        // Test that asserting existing :db.cardinality/many elements doesn't change the store.
+        let (_, witnessed) = assert_transact_witnessed!(conn, r#"
+            [[:db/add 200 :db.schema/attribute 100]
+             [:db/add 200 :db.schema/attribute 101]]
+        "#);
+        assert_matches!(conn.last_transaction(),
+                        "[[?tx :db/txInstant ?ms ?tx true]]");
+        assert_matches!(conn.datoms(),
+                        "[[100 :db.schema/version 11]
+                          [101 :db.schema/version 22]
+                          [200 :db.schema/attribute 100]
+                          [200 :db.schema/attribute 101]]");
+        // Right now, transaction watchers "witness" datoms that don't actually change the store.
+        // That is, transaction watchers are cheap to implement, not maximally useful.
+        assert_matches!(witnessed,
+                        "[[200 :db.schema/attribute 100 ?tx true]
+                          [200 :db.schema/attribute 101 ?tx true]
+                          [?tx :db/txInstant ?ms ?tx true]]");
+
+        // Test that we can retract :db.cardinality/one elements.
+        let (_, witnessed) = assert_transact_witnessed!(conn, r#"
+            [[:db/retract 100 :db.schema/version 11]]
+        "#);
+        assert_matches!(conn.last_transaction(),
+                        "[[100 :db.schema/version 11 ?tx false]
+                          [?tx :db/txInstant ?ms ?tx true]]");
+        assert_matches!(conn.datoms(),
+                        "[[101 :db.schema/version 22]
+                          [200 :db.schema/attribute 100]
+                          [200 :db.schema/attribute 101]]");
+        assert_matches!(witnessed,
+                        "[[100 :db.schema/version 11 ?tx false]
+                          [?tx :db/txInstant ?ms ?tx true]]");
+
+        // Test that we can retract :db.cardinality/many elements.
+        let (_, witnessed) = assert_transact_witnessed!(conn, r#"
+            [[:db/retract 200 :db.schema/attribute 100]]
+        "#);
+        assert_matches!(conn.last_transaction(),
+                        "[[200 :db.schema/attribute 100 ?tx false]
+                          [?tx :db/txInstant ?ms ?tx true]]");
+        assert_matches!(conn.datoms(),
+                        "[[101 :db.schema/version 22]
+                          [200 :db.schema/attribute 101]]");
+        assert_matches!(witnessed,
+                        "[[200 :db.schema/attribute 100 ?tx false]
+                          [?tx :db/txInstant ?ms ?tx true]]");
+
+        // Verify that retracting :db.cardinality/{one,many} elements that are not present doesn't
+        // change the store.
+        let (_, witnessed) = assert_transact_witnessed!(conn, r#"
+            [[:db/retract 100 :db.schema/version 11]
+             [:db/retract 200 :db.schema/attribute 100]]
+        "#);
+        assert_matches!(conn.last_transaction(),
+                        "[[?tx :db/txInstant ?ms ?tx true]]");
+        assert_matches!(conn.datoms(),
+                        "[[101 :db.schema/version 22]
+                          [200 :db.schema/attribute 101]]");
+        // Right now, transaction watchers "witness" datoms that don't actually change the store.
+        // That is, transaction watchers are cheap to implement, not maximally useful.
+        assert_matches!(witnessed,
+                        "[[100 :db.schema/version 11 ?tx false] ; Not actually applied!
+                          [200 :db.schema/attribute 100 ?tx false] ; Not actually applied!
+                          [?tx :db/txInstant ?ms ?tx true]]");
     }
 }

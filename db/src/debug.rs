@@ -12,6 +12,9 @@
 
 /// Low-level functions for testing.
 
+use std::cell::{
+    RefCell,
+};
 use std::cmp::{
     Ordering,
 };
@@ -35,6 +38,7 @@ use edn::{
 };
 use edn::entities::{
     EntidOrIdent,
+    OpType,
 };
 use entids;
 use errors::Result;
@@ -49,6 +53,9 @@ use schema::{
     SchemaBuilding,
 };
 use types::Schema;
+use watcher::{
+    TransactWatcher,
+};
 
 /// Represents a *datom* (assertion) in the store.
 #[derive(Clone,Debug,Eq,Hash,Ord,PartialOrd,PartialEq)]
@@ -288,4 +295,33 @@ pub(crate) fn dump_sql_query(conn: &rusqlite::Connection, sql: &str, params: &[&
 
     let dump = String::from_utf8(tw.into_inner().unwrap()).unwrap();
     Ok(dump)
+}
+
+/// A `CollectingWatcher` accumulates witnessed datoms.
+///
+/// The internal `RefCell` is how we get data _out_ of a `TransactWatcher`, which isn't well
+/// supported right now.
+pub struct CollectingWatcher<'a> {
+    pub cell: &'a RefCell<Option<(Vec<(OpType, Entid, Entid, TypedValue)>, Entid)>>,
+    pub collection: Vec<(OpType, Entid, Entid, TypedValue)>,
+}
+
+impl<'a> CollectingWatcher<'a> {
+    pub fn new(cell: &'a RefCell<Option<(Vec<(OpType, Entid, Entid, TypedValue)>, Entid)>>) -> Self {
+        CollectingWatcher { cell, collection: Vec::new() }
+    }
+}
+
+impl<'a> TransactWatcher for CollectingWatcher<'a> {
+    fn datom(&mut self, op: OpType, e: Entid, a: Entid, v: &TypedValue) {
+        self.collection.push((op, e, a, v.clone()))
+    }
+
+    fn done(&mut self, tx: &Entid, _schema: &Schema) -> Result<()> {
+        let mut temp = vec![];
+        ::std::mem::swap(&mut temp, &mut self.collection);
+        self.cell.replace(Some((temp, *tx)));
+
+        Ok(())
+    }
 }
