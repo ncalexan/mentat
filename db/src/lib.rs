@@ -50,6 +50,7 @@ mod metadata;
 mod schema;
 pub mod tx_observer;
 mod watcher;
+pub mod timelines;
 mod tx;
 mod tx_checking;
 pub mod types;

@@ -1147,6 +1147,7 @@ mod tests {
     use tx::{
         transact_terms,
     };
+    use timelines::move_from_main_timeline;
 
     // Macro to parse a `Borrow<str>` to an `edn::Value` and assert the given `edn::Value` `matches`
     // against it.
@@ -2793,5 +2794,98 @@ mod tests {
         let sqlite = new_connection_with_key("", "hunter2").expect("Failed to create encrypted connection");
         // Run a basic test as a sanity check.
         run_test_add(TestConn::with_sqlite(sqlite));
+    }
+
+    #[test]
+    fn test_timeline_move() {
+        let mut conn = TestConn::default();
+
+        assert_transact!(conn, r#"[
+            {:db/id 65536 :db/ident :test/one :db/valueType :db.type/long :db/cardinality :db.cardinality/one}
+            {:db/id 65537 :db/ident :test/many :db/valueType :db.type/long :db/cardinality :db.cardinality/many}
+        ]"#);
+
+        let first = "[
+            [65536 :db/ident :test/one]
+            [65536 :db/valueType :db.type/long]
+            [65536 :db/cardinality :db.cardinality/one]
+            [65537 :db/ident :test/many]
+            [65537 :db/valueType :db.type/long]
+            [65537 :db/cardinality :db.cardinality/many]
+        ]";
+        assert_matches!(conn.datoms(), first);
+
+        let tx_report1 = assert_transact!(conn, r#"[
+            [:db/add 65538 :test/one 1]
+            [:db/add 65538 :test/many 2]
+            [:db/add 65538 :test/many 3]
+        ]"#);
+        let partition_map1 = conn.partition_map.clone();
+
+        assert_matches!(conn.last_transaction(),
+                        "[[65538 :test/one 1 ?tx true]
+                          [65538 :test/many 2 ?tx true]
+                          [65538 :test/many 3 ?tx true]
+                          [?tx :db/txInstant ?ms ?tx true]]");
+
+        let second = "[
+            [65536 :db/ident :test/one]
+            [65536 :db/valueType :db.type/long]
+            [65536 :db/cardinality :db.cardinality/one]
+            [65537 :db/ident :test/many]
+            [65537 :db/valueType :db.type/long]
+            [65537 :db/cardinality :db.cardinality/many]
+            [65538 :test/one 1]
+            [65538 :test/many 2]
+            [65538 :test/many 3]
+        ]";
+        assert_matches!(conn.datoms(), second);
+
+        let tx_report2 = assert_transact!(conn, r#"[
+            [:db/add 65538 :test/one 2]
+            [:db/add 65538 :test/many 2]
+            [:db/retract 65538 :test/many 3]
+            [:db/add 65538 :test/many 4]
+        ]"#);
+        let partition_map2 = conn.partition_map.clone();
+
+        assert_matches!(conn.last_transaction(),
+                        "[[65538 :test/one 1 ?tx false]
+                          [65538 :test/one 2 ?tx true]
+                          [65538 :test/many 3 ?tx false]
+                          [65538 :test/many 4 ?tx true]
+                          [?tx :db/txInstant ?ms ?tx true]]");
+
+        let third = "[
+            [65536 :db/ident :test/one]
+            [65536 :db/valueType :db.type/long]
+            [65536 :db/cardinality :db.cardinality/one]
+            [65537 :db/ident :test/many]
+            [65537 :db/valueType :db.type/long]
+            [65537 :db/cardinality :db.cardinality/many]
+            [65538 :test/one 2]
+            [65538 :test/many 2]
+            [65538 :test/many 4]
+        ]";
+        assert_matches!(conn.datoms(), third);
+
+        let (partition_map, schema) = move_from_main_timeline(&conn.sqlite, &conn.schema, conn.partition_map.clone(), &vec![tx_report2.tx_id], 1).expect("moved timeline");
+        assert_matches!(conn.datoms(), second);
+        assert_eq!(partition_map2, partition_map);
+        assert_eq!(
+            partition_map2.get(":db.part/user").expect("user partition"),
+            partition_map.get(":db.part/user").expect("user partition")
+        );
+        assert_eq!(
+            partition_map2.get(":db.part/tx").expect("tx partition"),
+            partition_map.get(":db.part/tx").expect("tx partition")
+        );
+        assert_eq!(
+            partition_map2.get(":db.part/db").expect("db partition"),
+            partition_map.get(":db.part/db").expect("db partition")
+        );
+
+        move_from_main_timeline(&conn.sqlite, &conn.schema, conn.partition_map.clone(), &vec![tx_report1.tx_id], 1).expect("moved timeline");
+        assert_matches!(conn.datoms(), first);
     }
 }
