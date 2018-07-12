@@ -1273,12 +1273,12 @@ mod tests {
 
             // Does not include :db/txInstant.
             let datoms = debug::datoms_after(&conn, &db.schema, 0).unwrap();
-            assert_eq!(datoms.0.len(), 94);
+            assert_eq!(datoms.len(), 94);
 
             // Includes :db/txInstant.
             let transactions = debug::transactions_after(&conn, &db.schema, 0).unwrap();
-            assert_eq!(transactions.0.len(), 1);
-            assert_eq!(transactions.0[0].0.len(), 95);
+            assert_eq!(transactions.len(), 1);
+            assert_eq!(transactions[0].len(), 95);
 
             let mut parts = db.partition_map;
 
