@@ -63,6 +63,9 @@ pub use bootstrap::{
     USER0,
 };
 
+/// The global identifier of the "main" timeline, also known as "mainline".
+pub static TIMELINE_MAIN: i64 = 0;
+
 pub use schema::{
     AttributeBuilder,
     AttributeValidation,

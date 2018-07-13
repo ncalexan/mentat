@@ -451,17 +451,23 @@ fn read_materialized_view(conn: &rusqlite::Connection, table: &str) -> Result<Ve
     m
 }
 
-/// Read the partition map materialized view from the given SQL store.
-fn read_partition_map(conn: &rusqlite::Connection) -> Result<PartitionMap> {
+/// Read the partition map materialized view from the given SQL store for the given timeline at the
+/// given `tx_id`; or at the last transaction ID on the given timeline if `tx_id` is `None`.
+pub(crate) fn read_partition_map(conn: &rusqlite::Connection, timeline: i64, tx_id: Option<Entid>) -> Result<PartitionMap> {
+    let tx_id = match tx_id {
+        Some(tx_id) => tx_id,
+        None => conn.query_row_and_then("SELECT MAX(tx) FROM timelined_transactions WHERE timeline IS ?", &[&timeline], |row| row.get_checked(0))?,
+    };
+
     let s = r#"
-         WITH idxs(part, idx) AS (SELECT part, MAX(idx) FROM timelined_transaction_parts WHERE timeline IS 0 GROUP BY part)
+         WITH idxs(part, idx) AS (SELECT part, idx FROM timelined_transaction_parts WHERE tx = ? AND timeline = ? GROUP BY part)
          SELECT ps.part, ps.start, ps.end, idxs.idx, ps.allow_excision
          FROM parts AS ps, idxs
          WHERE idxs.idx IS NOT NULL AND ps.part IS idxs.part
     "#;
 
-    let mut stmt: rusqlite::Statement = conn.prepare(s)?;
-    let m = stmt.query_and_then(&[], |row| -> Result<(String, Partition)> {
+    let mut stmt: rusqlite::Statement = conn.prepare(&s)?;
+    let m = stmt.query_and_then(&[&tx_id, &timeline], |row| -> Result<(String, Partition)> {
         Ok((row.get_checked(0)?, Partition::new(row.get_checked(1)?, row.get_checked(2)?, row.get_checked(3)?, row.get_checked(4)?)))
     })?.collect();
     m
@@ -493,7 +499,7 @@ fn read_attribute_map(conn: &rusqlite::Connection) -> Result<AttributeMap> {
 /// Read the materialized views from the given SQL store and return a Mentat `DB` for querying and
 /// applying transactions.
 pub fn read_db(conn: &rusqlite::Connection) -> Result<DB> {
-    let partition_map = read_partition_map(conn)?;
+    let partition_map = read_partition_map(conn, ::TIMELINE_MAIN, None)?;
     let ident_map = read_ident_map(conn)?;
     let attribute_map = read_attribute_map(conn)?;
     let schema = Schema::from_ident_map_and_attribute_map(ident_map, attribute_map)?;
