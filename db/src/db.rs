@@ -249,14 +249,17 @@ lazy_static! {
         r#"CREATE TABLE parts (part TEXT NOT NULL PRIMARY KEY, start INTEGER NOT NULL, end INTEGER NOT NULL, allow_excision SMALLINT NOT NULL)"#,
 
         // Like:
-        // [1 ":db.part/db"   100]
-        // [1 ":db.part/user" 1000]
-        // [1 ":db.part/tx"   2000000]
-        // [2 ":db.part/db"   100]
-        // [2 ":db.part/user" 1005]
-        // [2 ":db.part/tx"   2000001]
+        // [1 ":db.part/db"   100     0]
+        // [1 ":db.part/user" 1000    0]
+        // [1 ":db.part/tx"   2000000 0]
+        // [2 ":db.part/db"   100     0]
+        // [2 ":db.part/user" 1005    0]
+        // [2 ":db.part/tx"   2000001 0]
+        // [2 ":db.part/db"   100     1]
+        // [2 ":db.part/user" 1005    1]
+        // [2 ":db.part/tx"   2000001 1]
         // ...
-        r#"CREATE TABLE transaction_parts (tx INTEGER NOT NULL, part TEXT NOT NULL, idx INTEGER NOT NULL, FOREIGN KEY (part) REFERENCES parts(part))"#,
+        r#"CREATE TABLE timelined_transaction_parts (tx INTEGER NOT NULL, part TEXT NOT NULL, idx INTEGER NOT NULL, timeline TINYINT NOT NULL DEFAULT 0, FOREIGN KEY (part) REFERENCES parts(part))"#,
         ]
     };
 }
@@ -451,7 +454,7 @@ fn read_materialized_view(conn: &rusqlite::Connection, table: &str) -> Result<Ve
 /// Read the partition map materialized view from the given SQL store.
 fn read_partition_map(conn: &rusqlite::Connection) -> Result<PartitionMap> {
     let s = r#"
-         WITH idxs(part, idx) AS (SELECT part, MAX(idx) FROM transaction_parts GROUP BY part)
+         WITH idxs(part, idx) AS (SELECT part, MAX(idx) FROM timelined_transaction_parts WHERE timeline IS 0 GROUP BY part)
          SELECT ps.part, ps.start, ps.end, idxs.idx, ps.allow_excision
          FROM parts AS ps, idxs
          WHERE idxs.idx IS NOT NULL AND ps.part IS idxs.part
@@ -994,7 +997,7 @@ pub fn update_partition_map(conn: &rusqlite::Connection, tx_id: Entid, partition
         bail!(DbErrorKind::NotYetImplemented(format!("No more than {} partitions are supported", max_partitions)));
     }
 
-    let s = format!("INSERT INTO transaction_parts (tx, part, idx) VALUES {}", ::repeat_values(3, partition_map.len()));
+    let s = format!("INSERT INTO timelined_transaction_parts (tx, part, idx) VALUES {}", ::repeat_values(3, partition_map.len()));
 
     let params: Vec<&ToSql> = partition_map.iter().flat_map(|(part, partition)| {
         once(&tx_id as &ToSql)
