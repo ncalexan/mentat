@@ -1219,11 +1219,14 @@ mod tests {
 
             let materialized_schema = Schema::from_ident_map_and_attribute_map(materialized_ident_map, materialized_attribute_map).expect("schema");
             assert_eq!(materialized_schema, self.schema);
+
+            let materialized_partition_map = read_partition_map(&self.sqlite, ::TIMELINE_MAIN, None).expect("partition map");
+            assert_eq!(materialized_partition_map, self.partition_map);
         }
 
-        fn transact<I>(&mut self, transaction: I) -> Result<TxReport> where I: Borrow<str> {
+        fn transact(&mut self, transaction: &str) -> Result<TxReport> {
             // Failure to parse the transaction is a coding error, so we unwrap.
-            let entities = edn::parse::entities(transaction.borrow()).expect(format!("to be able to parse {} into entities", transaction.borrow()).as_str());
+            let entities = edn::parse::entities(transaction.borrow()).expect(format!("to be able to parse {} into entities", transaction).as_str());
 
             let details = {
                 // The block scopes the borrow of self.sqlite.
@@ -1298,7 +1301,7 @@ mod tests {
             assert_eq!(transactions.0.len(), 1);
             assert_eq!(transactions.0[0].0.len(), 95);
 
-            let mut parts = db.partition_map;
+            let mut partition_map = db.partition_map;
 
             // Add a fake partition to allow tests to do things like
             // [:db/add 111 :foo/bar 222]
@@ -1313,12 +1316,16 @@ mod tests {
                              &[&fake_part, &fake_partition.start, &fake_partition.end, &fake_partition.allow_excision])
                     .expect("to insert fake partition");
 
-                parts.insert(fake_part.into(), fake_partition);
+                partition_map.insert(fake_part.into(), fake_partition);
+
+                let tx_id = partition_map.get(&":db.part/tx".to_string()).unwrap().get_index() - 1;
+
+                update_partition_map(&conn, tx_id, &partition_map).expect("update_partition_map");
             }
 
             let test_conn = TestConn {
                 sqlite: conn,
-                partition_map: parts,
+                partition_map,
                 schema: db.schema,
             };
 
