@@ -246,7 +246,17 @@ lazy_static! {
         r#"CREATE TABLE schema (e INTEGER NOT NULL, a SMALLINT NOT NULL, v BLOB NOT NULL, value_type_tag SMALLINT NOT NULL)"#,
         r#"CREATE INDEX idx_schema_unique ON schema (e, a, v, value_type_tag)"#,
         // TODO: store entid instead of ident for partition name.
-        r#"CREATE TABLE parts (part TEXT NOT NULL PRIMARY KEY, start INTEGER NOT NULL, end INTEGER NOT NULL, idx INTEGER NOT NULL, allow_excision SMALLINT NOT NULL)"#,
+        r#"CREATE TABLE parts (part TEXT NOT NULL PRIMARY KEY, start INTEGER NOT NULL, end INTEGER NOT NULL, allow_excision SMALLINT NOT NULL)"#,
+
+        // Like:
+        // [1 ":db.part/db"   100]
+        // [1 ":db.part/user" 1000]
+        // [1 ":db.part/tx"   2000000]
+        // [2 ":db.part/db"   100]
+        // [2 ":db.part/user" 1005]
+        // [2 ":db.part/tx"   2000001]
+        // ...
+        r#"CREATE TABLE transaction_parts (tx INTEGER NOT NULL, part TEXT NOT NULL, idx INTEGER NOT NULL, FOREIGN KEY (part) REFERENCES parts(part))"#,
         ]
     };
 }
@@ -298,7 +308,7 @@ pub fn create_current_version(conn: &mut rusqlite::Connection) -> Result<DB> {
     // This is necessary: `transact` will only UPDATE parts, not INSERT them if they're missing.
     for (part, partition) in db.partition_map.iter() {
         // TODO: Convert "keyword" part to SQL using Value conversion.
-        tx.execute("INSERT INTO parts (part, start, end, idx, allow_excision) VALUES (?, ?, ?, ?, ?)", &[part, &partition.start, &partition.end, partition.get_index(), &partition.allow_excision])?;
+        tx.execute("INSERT INTO parts (part, start, end, allow_excision) VALUES (?, ?, ?, ?)", &[part, &partition.start, &partition.end, &partition.allow_excision])?;
     }
 
     // TODO: return to transact_internal to self-manage the encompassing SQLite transaction.
@@ -440,7 +450,14 @@ fn read_materialized_view(conn: &rusqlite::Connection, table: &str) -> Result<Ve
 
 /// Read the partition map materialized view from the given SQL store.
 fn read_partition_map(conn: &rusqlite::Connection) -> Result<PartitionMap> {
-    let mut stmt: rusqlite::Statement = conn.prepare("SELECT part, start, end, idx, allow_excision FROM parts")?;
+    let s = r#"
+         WITH idxs(part, idx) AS (SELECT part, MAX(idx) FROM transaction_parts GROUP BY part)
+         SELECT ps.part, ps.start, ps.end, idxs.idx, ps.allow_excision
+         FROM parts AS ps, idxs
+         WHERE idxs.idx IS NOT NULL AND ps.part IS idxs.part
+    "#;
+
+    let mut stmt: rusqlite::Statement = conn.prepare(s)?;
     let m = stmt.query_and_then(&[], |row| -> Result<(String, Partition)> {
         Ok((row.get_checked(0)?, Partition::new(row.get_checked(1)?, row.get_checked(2)?, row.get_checked(3)?, row.get_checked(4)?)))
     })?.collect();
@@ -969,20 +986,19 @@ impl MentatStoring for rusqlite::Connection {
 
 /// Update the current partition map materialized view.
 // TODO: only update changed partitions.
-pub fn update_partition_map(conn: &rusqlite::Connection, partition_map: &PartitionMap) -> Result<()> {
-    let values_per_statement = 2;
+pub fn update_partition_map(conn: &rusqlite::Connection, tx_id: Entid, partition_map: &PartitionMap) -> Result<()> {
+    let values_per_statement = 3;
     let max_vars = conn.limit(Limit::SQLITE_LIMIT_VARIABLE_NUMBER) as usize;
     let max_partitions = max_vars / values_per_statement;
     if partition_map.len() > max_partitions {
         bail!(DbErrorKind::NotYetImplemented(format!("No more than {} partitions are supported", max_partitions)));
     }
 
-    // Like "UPDATE parts SET idx = CASE WHEN part = ? THEN ? WHEN part = ? THEN ? ELSE idx END".
-    let s = format!("UPDATE parts SET idx = CASE {} ELSE idx END",
-                    repeat("WHEN part = ? THEN ?").take(partition_map.len()).join(" "));
+    let s = format!("INSERT INTO transaction_parts (tx, part, idx) VALUES {}", ::repeat_values(3, partition_map.len()));
 
-    let params: Vec<&ToSql> = partition_map.iter().flat_map(|(name, partition)| {
-        once(name as &ToSql)
+    let params: Vec<&ToSql> = partition_map.iter().flat_map(|(part, partition)| {
+        once(&tx_id as &ToSql)
+            .chain(once(part as &ToSql))
             .chain(once(partition.get_index() as &ToSql))
     }).collect();
 
@@ -1278,8 +1294,17 @@ mod tests {
             // Add a fake partition to allow tests to do things like
             // [:db/add 111 :foo/bar 222]
             {
+                let fake_part = ":db.part/fake";
                 let fake_partition = Partition::new(100, 2000, 1000, true);
-                parts.insert(":db.part/fake".into(), fake_partition);
+
+                // Mentat doesn't truly support adding partitions, and we don't want to change the
+                // bootstrap process for testings, so we have to wire in our fake partition
+                // explicitly.
+                conn.execute("INSERT INTO parts (part, start, end, allow_excision) VALUES (?, ?, ?, ?)",
+                             &[&fake_part, &fake_partition.start, &fake_partition.end, &fake_partition.allow_excision])
+                    .expect("to insert fake partition");
+
+                parts.insert(fake_part.into(), fake_partition);
             }
 
             let test_conn = TestConn {

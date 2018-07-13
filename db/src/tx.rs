@@ -789,7 +789,7 @@ impl<'conn, 'a, W> Tx<'conn, 'a, W> where W: TransactWatcher {
         self.store.commit_transaction(self.tx_id)?;
         }
 
-        db::update_partition_map(self.store, &self.partition_map)?;
+        db::update_partition_map(self.store, self.tx_id, &self.partition_map)?;
         self.watcher.done(&self.tx_id, self.schema)?;
 
         if tx_might_update_metadata {
