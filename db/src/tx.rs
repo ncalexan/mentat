@@ -792,30 +792,37 @@ impl<'conn, 'a, W> Tx<'conn, 'a, W> where W: TransactWatcher {
         db::update_partition_map(self.store, self.tx_id, &self.partition_map)?;
         self.watcher.done(&self.tx_id, self.schema)?;
 
-        if tx_might_update_metadata {
-            // Extract changes to metadata from the store.
-            let metadata_assertions = self.store.committed_metadata_assertions(self.tx_id)?;
-
-            let mut new_schema = (*self.schema_for_mutation).clone(); // Clone the underlying Schema for modification.
-            let metadata_report = metadata::update_schema_from_entid_quadruples(&mut new_schema, metadata_assertions)?;
-
-            // We might not have made any changes to the schema, even though it looked like we
-            // would.  This should not happen, even during bootstrapping: we mutate an empty
-            // `Schema` in this case specifically to run the bootstrapped assertions through the
-            // regular transactor code paths, updating the schema and materialized views uniformly.
-            // But, belt-and-braces: handle it gracefully.
-            if new_schema != *self.schema_for_mutation {
-                let old_schema = (*self.schema_for_mutation).clone(); // Clone the original Schema for comparison.
-                *self.schema_for_mutation.to_mut() = new_schema; // Store the new Schema.
-                db::update_metadata(self.store, &old_schema, &*self.schema_for_mutation, &metadata_report)?;
-            }
-        }
-
-        Ok(TxReport {
+        let tx_report = TxReport {
             tx_id: self.tx_id,
             tx_instant,
-            tempids: tempids,
-        })
+            tempids,
+        };
+
+        Ok(//(tx_might_update_metadata,
+            tx_report)//)
+    }
+
+    pub fn update_metadata(&mut self) -> Result<metadata::MetadataReport> {
+        // if tx_might_update_metadata {
+
+        // Extract changes to metadata from the store.
+        let metadata_assertions = self.store.committed_metadata_assertions(self.tx_id)?;
+
+        let mut new_schema = (*self.schema_for_mutation).clone(); // Clone the underlying Schema for modification.
+        let metadata_report = metadata::update_schema_from_entid_quadruples(&mut new_schema, metadata_assertions)?;
+
+        // We might not have made any changes to the schema, even though it looked like we
+        // would.  This should not happen, even during bootstrapping: we mutate an empty
+        // `Schema` in this case specifically to run the bootstrapped assertions through the
+        // regular transactor code paths, updating the schema and materialized views uniformly.
+        // But, belt-and-braces: handle it gracefully.
+        if new_schema != *self.schema_for_mutation {
+            let old_schema = (*self.schema_for_mutation).clone(); // Clone the original Schema for comparison.
+            *self.schema_for_mutation.to_mut() = new_schema; // Store the new Schema.
+            db::update_metadata(self.store, &old_schema, &*self.schema_for_mutation, &metadata_report)?;
+        }
+
+        Ok(metadata_report)
     }
 }
 
@@ -860,6 +867,7 @@ pub fn transact<'conn, 'a, I, V, W>(conn: &'conn rusqlite::Connection,
 
     let mut tx = start_tx(conn, partition_map, schema_for_mutation, schema, watcher)?;
     let report = tx.transact_entities(entities)?;
+    tx.update_metadata()?;
     conclude_tx(tx, report)
 }
 
@@ -876,6 +884,7 @@ pub fn transact_terms<'conn, 'a, I, W>(conn: &'conn rusqlite::Connection,
 
     let mut tx = start_tx(conn, partition_map, schema_for_mutation, schema, watcher)?;
     let report = tx.transact_simple_terms(terms, tempid_set)?;
+    tx.update_metadata()?;
     conclude_tx(tx, report)
 }
 

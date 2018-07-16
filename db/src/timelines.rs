@@ -29,6 +29,7 @@ use edn::{
 use edn::entities::OpType;
 
 use db::{
+    self,
     TypedSQLValue,
 };
 use tx;
@@ -91,8 +92,9 @@ fn move_transactions_to(conn: &rusqlite::Connection, tx_ids: &[Entid], new_timel
     Ok(())
 }
 
-fn eradicate_transaction(conn: &rusqlite::Connection, tx: Entid) -> Result<()> {
-    conn.execute("DELETE FROM timelined_transactions WHERE tx = ?", &[&tx])?;
+fn eradicate_transaction(conn: &rusqlite::Connection, timeline: i64, tx: Entid) -> Result<()> {
+    conn.execute("DELETE FROM timelined_transactions WHERE tx = ? AND timeline = ?", &[&tx, &timeline])?;
+    conn.execute("DELETE FROM timelined_transaction_parts WHERE tx = ? AND timeline = ?", &[&tx, &timeline])?;
     Ok(())
 }
 
@@ -155,7 +157,7 @@ pub fn move_from_main_timeline(conn: &rusqlite::Connection, schema: &Schema,
     let (tx_report, _, new_schema, _) = tx::transact_terms(conn, partition_map.clone(), schema, schema, NullWatcher(), filtered_reversed_terms, InternSet::new())?;
 
     // 'transact_terms' resulted in a "rewind transaction", which we don't need. Delete it.
-    eradicate_transaction(conn, tx_report.tx_id)?;
+    eradicate_transaction(conn, ::TIMELINE_MAIN, tx_report.tx_id)?;
 
     // Move transactions over to the target timeline.
     move_transactions_to(conn, tx_ids, new_timeline)?;
@@ -173,4 +175,37 @@ pub fn move_from_main_timeline(conn: &rusqlite::Connection, schema: &Schema,
     };
 
     Ok((partition_map, new_schema))
+}
+
+
+/// Given a `conn` corresponding to the given `schema` and `partition_map`, "pop" the transaction
+/// with ID `tx_id` off of the `datoms` table.
+///
+/// `tx_id` must be the last transaction ID allocated in `:db.part/tx` of the initial partition map.
+pub fn pop(conn: &rusqlite::Connection, schema: &Schema, partition_map: &PartitionMap,
+           tx_id: Entid,
+           new_timeline: i64) -> Result<(PartitionMap, Option<Schema>)> {
+    if new_timeline == MAIN_TIMELINE {
+        bail!(DbErrorKind::NotYetImplemented(format!("Can't move transactions to main timeline")));
+    }
+
+    let reversed_terms = reversed_terms_after(conn, tx_id - 1)?;
+
+    // TODO comment why we're filtering.
+    let filtered_reversed_terms = reversed_terms.into_iter()
+        // .filter(|Term::AddOrRetract(_, _, a, _)| *a != 1)
+        .map(|t| t.rewrap());
+
+    // Rewind schema and datoms.
+    let (tx_report, _, new_schema, _) = tx::transact_terms(conn, partition_map.clone(), schema, schema, NullWatcher(), filtered_reversed_terms, InternSet::new())?;
+
+    // // 'transact_terms' resulted in a "rewind transaction", which we don't need. Delete it.
+    eradicate_transaction(conn, ::TIMELINE_MAIN, tx_report.tx_id)?;
+
+    // Move transactions over to the target timeline.
+    move_transactions_to(conn, &[tx_id], new_timeline)?;
+
+    let new_partition_map = db::read_partition_map(conn, ::TIMELINE_MAIN, Some(tx_id - 1))?;
+
+    Ok((new_partition_map, new_schema))
 }

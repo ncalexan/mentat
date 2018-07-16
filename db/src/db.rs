@@ -1171,7 +1171,10 @@ mod tests {
     use tx::{
         transact_terms,
     };
-    use timelines::move_from_main_timeline;
+    use timelines::{
+        self,
+        move_from_main_timeline,
+    };
 
     // Macro to parse a `Borrow<str>` to an `edn::Value` and assert the given `edn::Value` `matches`
     // against it.
@@ -1253,6 +1256,22 @@ mod tests {
             Ok(report)
         }
 
+        fn pop(&mut self) -> Result<Entid> {
+            let tx_id_to_pop = self.last_tx_id();
+
+            let (next_partition_map, next_schema) = timelines::pop(&self.sqlite, &self.schema, &self.partition_map, tx_id_to_pop, 1)?;
+
+            self.partition_map = next_partition_map;
+            if let Some(next_schema) = next_schema {
+                self.schema = next_schema;
+            }
+
+            // Verify that we've updated the materialized views during transacting.
+            self.assert_materialized_views();
+
+            Ok(tx_id_to_pop - 1)
+        }
+
         fn transact_simple_terms<I>(&mut self, terms: I, tempid_set: InternSet<TempId>) -> Result<TxReport> where I: IntoIterator<Item=TermWithTempIds> {
             let details = {
                 // The block scopes the borrow of self.sqlite.
@@ -1286,6 +1305,10 @@ mod tests {
 
         fn datoms(&self) -> edn::Value {
             debug::datoms_after(&self.sqlite, &self.schema, bootstrap::TX0).expect("datoms").into_edn()
+        }
+
+        fn transactions(&self) -> edn::Value {
+            debug::transactions_after(&self.sqlite, &self.schema, bootstrap::TX0).expect("transactions").into_edn()
         }
 
         fn fulltext_values(&self) -> edn::Value {
@@ -2837,12 +2860,146 @@ mod tests {
     }
 
     #[test]
+    fn test_pop_simple() {
+        let mut conn = TestConn::default();
+
+        let t = r#"
+            [{:db/id :db/doc :db/doc "test"}]
+        "#;
+
+        let partition_map0 = conn.partition_map.clone();
+
+        let report1 = assert_transact!(conn, t);
+        let partition_map1 = conn.partition_map.clone();
+
+        conn.pop().unwrap();
+
+        assert_matches!(conn.datoms(), "[]");
+        assert_matches!(conn.transactions(), "[]");
+        assert_eq!(conn.partition_map, partition_map0);
+
+        let report2 = assert_transact!(conn, t);
+        let partition_map2 = conn.partition_map.clone();
+
+        assert_eq!(report1.tx_id, report2.tx_id);
+        assert_eq!(partition_map1, partition_map2);
+
+        assert_matches!(conn.datoms(), r#"
+            [[37 :db/doc "test"]]
+        "#);
+        assert_matches!(conn.transactions(), r#"
+            [[[37 :db/doc "test" ?tx true]
+              [?tx :db/txInstant ?ms ?tx true]]]
+        "#);
+    }
+
+    #[test]
+    fn test_pop_ident() {
+        let mut conn = TestConn::default();
+
+        let t = r#"
+            [{:db/ident :test/entid :db/doc "test" :db.schema/version 1}]
+        "#;
+
+        let partition_map0 = conn.partition_map.clone();
+        let schema0 = conn.schema.clone();
+
+        let report1 = assert_transact!(conn, t);
+        let partition_map1 = conn.partition_map.clone();
+        let schema1 = conn.schema.clone();
+
+        conn.pop().unwrap();
+
+        assert_matches!(conn.datoms(), "[]");
+        assert_matches!(conn.transactions(), "[]");
+        assert_eq!(conn.partition_map, partition_map0);
+        assert_eq!(conn.schema, schema0);
+
+        let report2 = assert_transact!(conn, t);
+        let partition_map2 = conn.partition_map.clone();
+        let schema2 = conn.schema.clone();
+
+        assert_eq!(report1.tx_id, report2.tx_id);
+        assert_eq!(partition_map1, partition_map2);
+        assert_eq!(schema1, schema2);
+
+        assert_matches!(conn.datoms(), r#"
+            [[?e :db/ident :test/entid]
+             [?e :db/doc "test"]
+             [?e :db.schema/version 1]]
+        "#);
+        assert_matches!(conn.transactions(), r#"
+            [[[?e :db/ident :test/entid ?tx true]
+              [?e :db/doc "test" ?tx true]
+              [?e :db.schema/version 1 ?tx true]
+              [?tx :db/txInstant ?ms ?tx true]]]
+        "#);
+    }
+
+    #[test]
+    fn test_pop_schema() {
+        let mut conn = TestConn::default();
+
+        let t = r#"
+            [{:db/id "e" :db/ident :test/one :db/valueType :db.type/long :db/cardinality :db.cardinality/one}
+             {:db/id "f" :db/ident :test/many :db/valueType :db.type/long :db/cardinality :db.cardinality/many}]
+        "#;
+
+        let partition_map0 = conn.partition_map.clone();
+        let schema0 = conn.schema.clone();
+
+        let report1 = assert_transact!(conn, t);
+        let partition_map1 = conn.partition_map.clone();
+        let schema1 = conn.schema.clone();
+
+        conn.pop().unwrap();
+
+        assert_matches!(conn.datoms(), "[]");
+        assert_matches!(conn.transactions(), "[]");
+        assert_eq!(conn.partition_map, partition_map0);
+        assert_eq!(conn.schema, schema0);
+
+        println!("{}", debug::dump_sql_query(&conn.sqlite, "SELECT * FROM timelined_transactions", &[]).unwrap());
+        println!("{}", debug::dump_sql_query(&conn.sqlite, "SELECT * FROM timelined_transaction_parts", &[]).unwrap());
+
+        let report2 = assert_transact!(conn, t);
+        let partition_map2 = conn.partition_map.clone();
+        let schema2 = conn.schema.clone();
+
+        assert_eq!(report1.tx_id, report2.tx_id);
+        assert_eq!(partition_map1, partition_map2);
+        assert_eq!(schema1, schema2);
+
+        assert_matches!(conn.datoms(), r#"
+            [[?e :db/ident :test/entid]
+             [?e :db/doc "test"]
+             [?e :db.schema/version 1]]
+        "#);
+        assert_matches!(conn.transactions(), r#"
+            [[[?e :db/ident :test/entid ?tx true]
+              [?e :db/doc "test" ?tx true]
+              [?e :db.schema/version 1 ?tx true]
+              [?tx :db/txInstant ?ms ?tx true]]]
+        "#);
+
+        println!("{}", debug::dump_sql_query(&conn.sqlite, "SELECT * FROM timelined_transactions", &[]).unwrap());
+        println!("{}", debug::dump_sql_query(&conn.sqlite, "SELECT * FROM timelined_transaction_parts", &[]).unwrap());
+
+        // assert_eq!(conn.partition_map, partition_map0);
+
+        // assert_eq!(0, 1);
+    }
+
+    #[test]
     fn test_timeline_move() {
         let mut conn = TestConn::default();
 
-        assert_transact!(conn, r#"[
-            {:db/id 65536 :db/ident :test/one :db/valueType :db.type/long :db/cardinality :db.cardinality/one}
-            {:db/id 65537 :db/ident :test/many :db/valueType :db.type/long :db/cardinality :db.cardinality/many}
+        // assert_eq!((65536..65539),
+        //            conn.partition_map.allocate_entids(":db.part/user", 3));
+
+        let report = assert_transact!(conn, r#"[
+            {:db/id "e" :db/ident :test/one :db/valueType :db.type/long :db/cardinality :db.cardinality/one}
+            {:db/id "f" :db/ident :test/many :db/valueType :db.type/long :db/cardinality :db.cardinality/many}
         ]"#);
 
         let first = "[
@@ -2856,14 +3013,15 @@ mod tests {
         assert_matches!(conn.datoms(), first);
 
         let tx_report1 = assert_transact!(conn, r#"[
-            [:db/add 65538 :test/one 1]
-            [:db/add 65538 :test/many 2]
-            [:db/add 65538 :test/many 3]
+            {:db/ident :test/entid :test/one 1 :test/many [2 3]}
         ]"#);
         let partition_map1 = conn.partition_map.clone();
+        assert_eq!(read_partition_map(&conn.sqlite, ::TIMELINE_MAIN, Some(tx_report1.tx_id)).expect("read_partition_map"),
+                   partition_map1);
 
         assert_matches!(conn.last_transaction(),
-                        "[[65538 :test/one 1 ?tx true]
+                        "[[65538 :db/ident :test/entid ?tx true]
+                          [65538 :test/one 1 ?tx true]
                           [65538 :test/many 2 ?tx true]
                           [65538 :test/many 3 ?tx true]
                           [?tx :db/txInstant ?ms ?tx true]]");
@@ -2875,6 +3033,7 @@ mod tests {
             [65537 :db/ident :test/many]
             [65537 :db/valueType :db.type/long]
             [65537 :db/cardinality :db.cardinality/many]
+            [65538 :db/ident :test/entid]
             [65538 :test/one 1]
             [65538 :test/many 2]
             [65538 :test/many 3]
@@ -2882,12 +3041,16 @@ mod tests {
         assert_matches!(conn.datoms(), second);
 
         let tx_report2 = assert_transact!(conn, r#"[
-            [:db/add 65538 :test/one 2]
-            [:db/add 65538 :test/many 2]
-            [:db/retract 65538 :test/many 3]
-            [:db/add 65538 :test/many 4]
+            [:db/add :test/entid :test/one 2]
+            [:db/add :test/entid :test/many 2]
+            [:db/retract :test/entid :test/many 3]
+            [:db/add :test/entid :test/many 4]
         ]"#);
         let partition_map2 = conn.partition_map.clone();
+        assert_eq!(read_partition_map(&conn.sqlite, ::TIMELINE_MAIN, Some(tx_report1.tx_id)).expect("read_partition_map"),
+                   partition_map1);
+        assert_eq!(read_partition_map(&conn.sqlite, ::TIMELINE_MAIN, Some(tx_report2.tx_id)).expect("read_partition_map"),
+                   partition_map2);
 
         assert_matches!(conn.last_transaction(),
                         "[[65538 :test/one 1 ?tx false]
@@ -2903,26 +3066,28 @@ mod tests {
             [65537 :db/ident :test/many]
             [65537 :db/valueType :db.type/long]
             [65537 :db/cardinality :db.cardinality/many]
+            [65538 :db/ident :test/entid]
             [65538 :test/one 2]
             [65538 :test/many 2]
             [65538 :test/many 4]
         ]";
         assert_matches!(conn.datoms(), third);
 
-        let (partition_map, schema) = move_from_main_timeline(&conn.sqlite, &conn.schema, conn.partition_map.clone(), &vec![tx_report2.tx_id], 1).expect("moved timeline");
+        let (partition_map3, schema) = move_from_main_timeline(&conn.sqlite, &conn.schema, conn.partition_map.clone(), &vec![tx_report2.tx_id], 1).expect("moved timeline");
+
         assert_matches!(conn.datoms(), second);
-        assert_eq!(partition_map2, partition_map);
+        // assert_eq!(partition_map2, partition_map3);
         assert_eq!(
             partition_map2.get(":db.part/user").expect("user partition"),
-            partition_map.get(":db.part/user").expect("user partition")
+            partition_map3.get(":db.part/user").expect("user partition")
         );
         assert_eq!(
             partition_map2.get(":db.part/tx").expect("tx partition"),
-            partition_map.get(":db.part/tx").expect("tx partition")
+            partition_map3.get(":db.part/tx").expect("tx partition")
         );
         assert_eq!(
             partition_map2.get(":db.part/db").expect("db partition"),
-            partition_map.get(":db.part/db").expect("db partition")
+            partition_map3.get(":db.part/db").expect("db partition")
         );
 
         move_from_main_timeline(&conn.sqlite, &conn.schema, conn.partition_map.clone(), &vec![tx_report1.tx_id], 1).expect("moved timeline");
